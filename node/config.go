@@ -27,6 +27,9 @@ type Config struct {
 	// 是否允许作为中继节点
 	EnableRelay bool
 
+	// 预设中继节点地址（host:port）
+	RelayNodes []string
+
 	// 最大连接数
 	MaxPeers int
 }
@@ -41,6 +44,7 @@ func DefaultConfig() *Config {
 		HeartbeatTimeout:  30 * time.Second,
 		EnableHolePunch:   true,
 		EnableRelay:       true,
+		RelayNodes:        []string{},
 		MaxPeers:          50,
 	}
 }
@@ -94,5 +98,12 @@ func WithEnableRelay(enable bool) Option {
 func WithMaxPeers(max int) Option {
 	return func(c *Config) {
 		c.MaxPeers = max
+	}
+}
+
+// WithRelayNodes 设置中继节点地址列表
+func WithRelayNodes(addrs []string) Option {
+	return func(c *Config) {
+		c.RelayNodes = addrs
 	}
 }

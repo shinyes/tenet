@@ -15,18 +15,33 @@ func main() {
 	port := flag.Int("l", 0, "监听端口（0表示自动分配）")
 	password := flag.String("secret", "", "网络密码（相同密码的节点可以互联）")
 	connect := flag.String("p", "", "要连接的节点地址（host:port）")
+	relays := flag.String("relay", "", "中继节点列表（逗号分隔 host:port）")
 	flag.Parse()
 
 	fmt.Println("=== P2P 加密隧道示例 ===")
 	fmt.Println()
 
 	// 创建隧道
-	tunnel, err := api.NewTunnel(
+	opts := []api.Option{
 		api.WithPassword(*password),
 		api.WithListenPort(*port),
 		api.WithEnableRelay(true),
 		api.WithEnableHolePunch(true),
-	)
+	}
+	if *relays != "" {
+		parts := strings.Split(*relays, ",")
+		clean := make([]string, 0, len(parts))
+		for _, v := range parts {
+			v = strings.TrimSpace(v)
+			if v != "" {
+				clean = append(clean, v)
+			}
+		}
+		if len(clean) > 0 {
+			opts = append(opts, api.WithRelayNodes(clean))
+		}
+	}
+	tunnel, err := api.NewTunnel(opts...)
 	if err != nil {
 		fmt.Printf("创建隧道失败: %v\n", err)
 		os.Exit(1)
@@ -144,7 +159,8 @@ func main() {
 				fmt.Println("已连接节点:")
 				for i, p := range peers {
 					transport := tunnel.PeerTransport(p)
-					fmt.Printf("  %d. %s [%s]\n", i+1, p, transport)
+					linkMode := tunnel.PeerLinkMode(p)
+					fmt.Printf("  %d. %s [%s/%s]\n", i+1, p, transport, linkMode)
 				}
 			}
 

@@ -7,7 +7,7 @@
 - 🔒 **端到端加密**：使用 Noise Protocol 框架（与 WireGuard 相同）
 - 🕳️ **NAT 穿透**：支持 TCP (Simultaneous Open) 与 UDP 并行打洞，智能选择最佳链路
 - ⚡ **无缝升级**：UDP 快速握手，后台自动升级至抗 QoS 的 TCP 通道
-- 🔄 **自动中继**：打洞失败时自动选择最优中继节点 (Developing)
+- 🔄 **自动中继**：打洞失败时自动在可用节点中回退到中继
 - 🌐 **节点发现**：连接的节点会互相介绍其他节点
 - 🔑 **密码组网**：相同密码的节点自动组成私有网络
 
@@ -86,6 +86,16 @@ go run examples/basic/main.go -l 1231 -secret "mysecret"
 go run examples/basic/main.go -l 1232 -secret "mysecret" -p "127.0.0.1:1231"
 ```
 
+**使用中继节点**:
+```bash
+# 中继服务器（开启 -relay 提供中继服务）
+go run examples/basic/main.go -l 9000 -secret "mysecret" -relay
+
+# 普通节点（自动使用可用中继，无需指定 -relay）
+go run examples/basic/main.go -l 1232 -secret "mysecret" -p "1.2.3.4:9000"
+```
+> 只有开启 `-relay` 的节点才会响应中继转发请求。其他节点在直连失败时会自动通过已连接的中继节点回退。
+
 ### 编译示例
 
 **Windows**:
@@ -126,8 +136,9 @@ go build -o build\basic.exe .\examples\basic
 | `WithPassword(pwd)` | 网络密码 |
 | `WithListenPort(port)` | 监听端口 |
 | `WithEnableHolePunch(bool)` | 启用NAT打洞 |
-| `WithEnableRelay(bool)` | 启用中继 |
-| `WithMaxPeers(n)` | 最大连接数 |
+| `WithEnableRelay(bool)` | 启用中继服务（作为中继服务器） |
+| `WithMaxPeers(n)` | 最大连接数（超过后拒绝新连接） |
+| `WithRelayNodes(addrs)` | 预设中继节点种子列表（可选） |
 
 ## 项目结构
 
@@ -154,9 +165,36 @@ go build -o build\basic.exe .\examples\basic
     *   如果 UDP 先建立，系统会保持后台 TCP 尝试。
     *   一旦 TCP 握手成功，无缝将该节点的所有流量升级至 TCP 通道。
 6.  **通信**: 建立加密会话后，通过当前最优通道发送加密数据包。
-6. **中继**: (开发中) 打洞失败时，通过已连接的其他节点中继数据。
+7.  **中继**: 打洞失败时，优先从已连接节点中选择可用中继回退。
+8.  **节点发现**: 节点连接成功后自动交换已知节点列表，实现网络自动扩展。
+
+### 节点发现协议
+
+当 A↔B 和 C↔B 已连接时：
+1. C 向 B 发送 **DiscoveryRequest (0x04)** 请求已知节点列表
+2. B 返回 **DiscoveryResponse (0x05)** 包含 A 的 PeerID 和地址
+3. C 自动尝试连接 A，无需手动配置
+
+```
+      A ←────────→ B ←────────→ C
+      ↑                         │
+      └─────── 自动发现 ─────────┘
+```
+
+## 协议常量
+
+| 类型 | 值 | 说明 |
+|------|-----|------|
+| `PacketTypeHandshake` | 0x01 | Noise 握手 |
+| `PacketTypeData` | 0x02 | 加密数据 |
+| `PacketTypeRelay` | 0x03 | 中继封装 |
+| `PacketTypeDiscoveryReq` | 0x04 | 节点发现请求 |
+| `PacketTypeDiscoveryResp` | 0x05 | 节点发现响应 |
 
 ## 依赖
 
 - [flynn/noise](https://github.com/flynn/noise) - Noise Protocol框架
 - [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) - 加密原语
+
+## 参考
+- [Easytier](https://github.com/EasyTier/EasyTier) - 去中心化组网

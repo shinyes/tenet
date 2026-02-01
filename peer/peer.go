@@ -10,13 +10,15 @@ import (
 
 // Peer represents a connected node
 type Peer struct {
-	ID        string
-	Addr      net.Addr // Generalized to net.Addr
-	Conn      net.Conn // Active TCP connection, if any
-	Transport string   // "tcp" or "udp"
-	Session   *crypto.Session
-	LastSeen  time.Time
-	mu        sync.RWMutex
+	ID          string
+	Addr        net.Addr     // Generalized to net.Addr
+	Conn        net.Conn     // Active TCP connection, if any
+	Transport   string       // "tcp" or "udp"
+	LinkMode    string       // "p2p" or "relay"
+	RelayTarget *net.UDPAddr // 通过中继访问的目标地址（发起方使用）
+	Session     *crypto.Session
+	LastSeen    time.Time
+	mu          sync.RWMutex
 }
 
 // UpgradeTransport safely updates the peer connection info
@@ -36,6 +38,14 @@ func (p *Peer) UpgradeTransport(addr net.Addr, conn net.Conn, transport string, 
 	p.Transport = transport
 	p.Session = session
 	p.LastSeen = time.Now()
+}
+
+// SetLinkMode 设置链路模式和中继目标
+func (p *Peer) SetLinkMode(mode string, relayTarget *net.UDPAddr) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.LinkMode = mode
+	p.RelayTarget = relayTarget
 }
 
 // GetTransportInfo returns the current transport and address

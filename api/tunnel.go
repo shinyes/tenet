@@ -118,6 +118,11 @@ func (t *Tunnel) PeerTransport(peerID string) string {
 	return t.node.GetPeerTransport(peerID)
 }
 
+// PeerLinkMode 获取对等节点的链路模式 (p2p/relay)
+func (t *Tunnel) PeerLinkMode(peerID string) string {
+	return t.node.GetPeerLinkMode(peerID)
+}
+
 // --- 配置选项 ---
 
 type tunnelConfig struct {
@@ -159,6 +164,13 @@ func WithEnableRelay(enable bool) Option {
 func WithMaxPeers(max int) Option {
 	return func(c *tunnelConfig) {
 		c.nodeOpts = append(c.nodeOpts, node.WithMaxPeers(max))
+	}
+}
+
+// WithRelayNodes 设置中继节点地址列表
+func WithRelayNodes(addrs []string) Option {
+	return func(c *tunnelConfig) {
+		c.nodeOpts = append(c.nodeOpts, node.WithRelayNodes(addrs))
 	}
 }
 

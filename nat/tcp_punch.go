@@ -54,8 +54,13 @@ func (tp *TCPHolePuncher) Punch(ctx context.Context, localPort int, peerAddr *ne
 			conn, err := dialer.DialContext(ctx, "tcp", peerAddr.String())
 			if err == nil {
 				// Success!
+				tcpConn, ok := conn.(*net.TCPConn)
+				if !ok {
+					conn.Close()
+					continue
+				}
 				select {
-				case resultChan <- conn.(*net.TCPConn):
+				case resultChan <- tcpConn:
 				case <-ctx.Done():
 					conn.Close()
 				}
@@ -82,16 +87,21 @@ func (tp *TCPHolePuncher) Punch(ctx context.Context, localPort int, peerAddr *ne
 		}
 		defer listener.Close()
 
-		// Ensure listener is closed on context cancellation to unblock Accept
-		go func() {
-			<-ctx.Done()
-			listener.Close()
-		}()
-
-		// Accept loop
+		// Accept loop with deadline to allow context check
 		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			// Set short deadline to periodically check context
+			listener.(*net.TCPListener).SetDeadline(time.Now().Add(200 * time.Millisecond))
 			conn, err := listener.Accept()
 			if err != nil {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					continue // Timeout, check context and retry
+				}
 				select {
 				case <-ctx.Done():
 					return
@@ -102,9 +112,14 @@ func (tp *TCPHolePuncher) Punch(ctx context.Context, localPort int, peerAddr *ne
 
 			// Check if it's the expected peer (optional but good for security)
 			// For simplified hole punching we usually accept and verify handshake later.
+			tcpConn, ok := conn.(*net.TCPConn)
+			if !ok {
+				conn.Close()
+				continue
+			}
 
 			select {
-			case resultChan <- conn.(*net.TCPConn):
+			case resultChan <- tcpConn:
 			case <-ctx.Done():
 				conn.Close()
 			}

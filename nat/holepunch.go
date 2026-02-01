@@ -86,16 +86,34 @@ func (hp *HolePuncher) Punch(peerPublicAddr *net.UDPAddr, peerID []byte) (*HoleP
 		punchPacket[20+i] = byte(timestamp >> (i * 8))
 	}
 
-	// 创建接收通道
+	// 创建接收通道和停止信号
 	receiveChan := make(chan *net.UDPAddr, 1)
+	stopChan := make(chan struct{})
+	defer close(stopChan)
 
-	// 启动接收协程
+	// 启动接收协程（通过 deadline 机制可以退出）
 	go func() {
 		buf := make([]byte, 64)
 		for {
+			select {
+			case <-stopChan:
+				return
+			default:
+			}
+
 			n, addr, err := hp.conn.ReadFromUDP(buf)
 			if err != nil {
-				return
+				// 检查是否应该退出
+				select {
+				case <-stopChan:
+					return
+				default:
+					// 如果是超时错误，会在下一次迭代中继续
+					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+						return // deadline 到了，函数即将返回
+					}
+					return
+				}
 			}
 			if addr == nil || !addr.IP.Equal(peerPublicAddr.IP) || addr.Port != peerPublicAddr.Port {
 				continue
