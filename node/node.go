@@ -26,6 +26,8 @@ const (
 	PacketTypeRelay         = 0x03 // 中继封装
 	PacketTypeDiscoveryReq  = 0x04 // 节点发现请求
 	PacketTypeDiscoveryResp = 0x05 // 节点发现响应
+	PacketTypeHeartbeat     = 0x06 // 心跳请求
+	PacketTypeHeartbeatAck  = 0x07 // 心跳响应
 
 	// 中继模式
 	RelayModeForward = 0x01 // 请求转发
@@ -146,9 +148,10 @@ func (n *Node) Start() error {
 	}
 	n.tcpListener = tcpListener
 
-	n.wg.Add(2) // 1 个用于 UDP 读，1 个用于 TCP Accept
+	n.wg.Add(3) // 1 个用于 UDP 读，1 个用于 TCP Accept，1 个用于心跳
 	go n.handleRead()
 	go n.acceptTCP()
+	go n.heartbeatLoop()
 
 	return nil
 }
@@ -461,11 +464,15 @@ func (n *Node) acceptTCP() {
 
 // handleTCP 处理 TCP 入站连接
 func (n *Node) handleTCP(conn net.Conn) {
-	// fmt.Printf("DEBUG: handleTCP start for %s\n", conn.RemoteAddr())
 	defer func() {
-		// fmt.Printf("DEBUG: handleTCP exit for %s\n", conn.RemoteAddr())
 		conn.Close()
 	}()
+
+	// 设置 TCP KeepAlive
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(30 * time.Second)
+	}
 
 	// 按帧读取
 	// [Len(2)] [Packet...]
@@ -482,7 +489,6 @@ func (n *Node) handleTCP(conn net.Conn) {
 		}
 		length := uint16(header[0])<<8 | uint16(header[1])
 		if length == 0 || length > maxTCPFrameSize {
-			fmt.Printf("DEBUG: Invalid TCP Frame Len=%d from %s\n", length, conn.RemoteAddr())
 			return
 		}
 
@@ -588,14 +594,18 @@ func (n *Node) handleRead() {
 // handlePacket 处理通用包
 func (n *Node) handlePacket(conn net.Conn, remoteAddr net.Addr, transport string, packetType byte, payload []byte) {
 	switch packetType {
-	case 0x01: // 握手
+	case PacketTypeHandshake: // 握手
 		n.processHandshake(conn, remoteAddr, transport, payload)
-	case 0x02: // 数据
+	case PacketTypeData: // 数据
 		n.processData(remoteAddr, payload)
-	case 0x04: // 节点发现请求
+	case PacketTypeDiscoveryReq: // 节点发现请求
 		n.processDiscoveryRequest(conn, remoteAddr, transport)
-	case 0x05: // 节点发现响应
+	case PacketTypeDiscoveryResp: // 节点发现响应
 		n.processDiscoveryResponse(payload)
+	case PacketTypeHeartbeat: // 心跳请求
+		n.processHeartbeat(conn, remoteAddr, transport)
+	case PacketTypeHeartbeatAck: // 心跳响应
+		n.processHeartbeatAck(remoteAddr)
 	}
 }
 
@@ -717,14 +727,15 @@ func (n *Node) processHandshake(conn net.Conn, remoteAddr net.Addr, transport st
 
 		// 新对端
 		p := &peer.Peer{
-			ID:          peerID,
-			Addr:        remoteAddr,
-			Conn:        conn,
-			Transport:   transport,
-			LinkMode:    linkMode,
-			RelayTarget: relayTarget,
-			Session:     session,
-			LastSeen:    time.Now(),
+			ID:           peerID,
+			Addr:         remoteAddr,
+			OriginalAddr: addrStr,
+			Conn:         conn,
+			Transport:    transport,
+			LinkMode:     linkMode,
+			RelayTarget:  relayTarget,
+			Session:      session,
+			LastSeen:     time.Now(),
 		}
 		n.Peers.Add(p)
 		// n.mu 已由 processHandshake 持有
@@ -1004,7 +1015,6 @@ func (n *Node) processData(remoteAddr net.Addr, payload []byte) {
 	peerID, ok := n.addrToPeer[remoteAddr.String()]
 	n.mu.RUnlock()
 
-	// fmt.Printf("DEBUG: processData from %s -> PeerID=%s Found=%v\n", remoteAddr, peerID, ok)
 	if !ok {
 		return
 	}
@@ -1042,11 +1052,11 @@ func (n *Node) sendRaw(conn net.Conn, addr net.Addr, transport string, packet []
 		frame[1] = byte(length)
 		copy(frame[2:], packet)
 		if _, err := conn.Write(frame); err != nil {
-			fmt.Printf("DEBUG: sendRaw tcp write error to %s: %v\n", conn.RemoteAddr(), err)
+			// TCP 发送失败，可能连接已断开
 		}
 	} else if udpAddr, ok := addr.(*net.UDPAddr); ok {
 		if _, err := n.conn.WriteToUDP(packet, udpAddr); err != nil {
-			fmt.Printf("DEBUG: sendRaw udp write error to %s: %v\n", udpAddr.String(), err)
+			// UDP 发送失败
 		}
 	}
 }
@@ -1073,4 +1083,168 @@ func (n *Node) GetPeerLinkMode(peerID string) string {
 		return "p2p"
 	}
 	return p.LinkMode
+}
+
+// heartbeatLoop 心跳循环，定期向所有节点发送心跳并检测超时
+func (n *Node) heartbeatLoop() {
+	defer n.wg.Done()
+
+	ticker := time.NewTicker(n.Config.HeartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-n.closing:
+			return
+		case <-ticker.C:
+			n.sendHeartbeats()
+			n.checkHeartbeatTimeouts()
+		}
+	}
+}
+
+// sendHeartbeats 向所有已连接节点发送心跳
+func (n *Node) sendHeartbeats() {
+	peerIDs := n.Peers.IDs()
+	for _, peerID := range peerIDs {
+		p, ok := n.Peers.Get(peerID)
+		if !ok {
+			continue
+		}
+
+		// 构造心跳包: TENT + 0x06 + 时间戳(8字节)
+		packet := make([]byte, 13)
+		copy(packet[0:4], []byte(MagicBytes))
+		packet[4] = PacketTypeHeartbeat
+		timestamp := time.Now().UnixNano()
+		for i := 0; i < 8; i++ {
+			packet[5+i] = byte(timestamp >> (i * 8))
+		}
+
+		transport, addr, conn := p.GetTransportInfo()
+		n.sendRaw(conn, addr, transport, packet)
+	}
+}
+
+// checkHeartbeatTimeouts 检查心跳超时的节点
+func (n *Node) checkHeartbeatTimeouts() {
+	peerIDs := n.Peers.IDs()
+	now := time.Now()
+
+	for _, peerID := range peerIDs {
+		p, ok := n.Peers.Get(peerID)
+		if !ok {
+			continue
+		}
+
+		lastSeen := p.GetLastSeen()
+
+		if now.Sub(lastSeen) > n.Config.HeartbeatTimeout {
+			// 节点超时，移除并通知
+			fmt.Printf("[心跳] 节点 %s 超时断开\n", peerID[:8])
+			n.removePeer(peerID)
+		}
+	}
+}
+
+// removePeer 移除节点并触发回调
+func (n *Node) removePeer(peerID string) {
+	p, ok := n.Peers.Get(peerID)
+	if !ok {
+		return
+	}
+
+	// 保存原始地址用于重连
+	originalAddr := p.GetOriginalAddr()
+
+	// 关闭 TCP 连接（如果有）
+	p.Close()
+
+	// 从 addrToPeer 中移除
+	n.mu.Lock()
+	for addr, pid := range n.addrToPeer {
+		if pid == peerID {
+			delete(n.addrToPeer, addr)
+		}
+	}
+	n.mu.Unlock()
+
+	// 从 PeerStore 中移除
+	n.Peers.Remove(peerID)
+
+	// 触发断开回调
+	n.mu.RLock()
+	callback := n.onPeerDisconnected
+	n.mu.RUnlock()
+	if callback != nil {
+		go callback(peerID)
+	}
+
+	// 尝试重连（在后台进行）
+	if originalAddr != "" {
+		go func(addr string) {
+			// 等待一段时间再尝试重连
+			time.Sleep(5 * time.Second)
+
+			// 检查节点是否仍在运行
+			select {
+			case <-n.closing:
+				return
+			default:
+			}
+
+			// 检查是否已经重新连接
+			for _, pid := range n.Peers.IDs() {
+				if pid == peerID {
+					return // 已重连
+				}
+			}
+
+			fmt.Printf("[重连] 尝试重新连接到 %s\n", addr)
+			if err := n.Connect(addr); err != nil {
+				fmt.Printf("[重连] 连接 %s 失败: %v\n", addr, err)
+			}
+		}(originalAddr)
+	}
+}
+
+// processHeartbeat 处理心跳请求，返回心跳响应
+func (n *Node) processHeartbeat(conn net.Conn, remoteAddr net.Addr, transport string) {
+	// 更新节点最后活动时间
+	n.mu.RLock()
+	peerID, ok := n.addrToPeer[remoteAddr.String()]
+	n.mu.RUnlock()
+	if ok {
+		if p, exists := n.Peers.Get(peerID); exists {
+			p.UpdateLastSeen()
+		}
+	}
+
+	// 发送心跳响应: TENT + 0x07 + 时间戳(8字节)
+	packet := make([]byte, 13)
+	copy(packet[0:4], []byte(MagicBytes))
+	packet[4] = PacketTypeHeartbeatAck
+	timestamp := time.Now().UnixNano()
+	for i := 0; i < 8; i++ {
+		packet[5+i] = byte(timestamp >> (i * 8))
+	}
+
+	n.sendRaw(conn, remoteAddr, transport, packet)
+}
+
+// processHeartbeatAck 处理心跳响应
+func (n *Node) processHeartbeatAck(remoteAddr net.Addr) {
+	n.mu.RLock()
+	peerID, ok := n.addrToPeer[remoteAddr.String()]
+	n.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	p, exists := n.Peers.Get(peerID)
+	if !exists {
+		return
+	}
+
+	p.UpdateLastSeen()
 }

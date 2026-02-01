@@ -10,6 +10,8 @@
 - 🔄 **自动中继**：打洞失败时自动在可用节点中回退到中继
 - 🌐 **节点发现**：连接的节点会互相介绍其他节点
 - 🔑 **密码组网**：相同密码的节点自动组成私有网络
+- 💓 **心跳保活**：定期心跳检测连接状态，超时自动断开
+- 🔃 **断线重连**：节点断开后自动尝试重新连接
 
 ## 快速开始
 
@@ -138,6 +140,7 @@ go build -o build\basic.exe .\examples\basic
 | `WithEnableHolePunch(bool)` | 启用NAT打洞 |
 | `WithEnableRelay(bool)` | 启用中继服务（作为中继服务器） |
 | `WithMaxPeers(n)` | 最大连接数（超过后拒绝新连接） |
+| `WithHeartbeatInterval(d)` | 心跳发送间隔（默认 5 秒） |
 | `WithRelayNodes(addrs)` | 预设中继节点种子列表（可选） |
 
 ## 项目结构
@@ -167,6 +170,8 @@ go build -o build\basic.exe .\examples\basic
 6.  **通信**: 建立加密会话后，通过当前最优通道发送加密数据包。
 7.  **中继**: 打洞失败时，优先从已连接节点中选择可用中继回退。
 8.  **节点发现**: 节点连接成功后自动交换已知节点列表，实现网络自动扩展。
+9.  **心跳保活**: 每 5 秒发送心跳包，30 秒无响应则视为断开。
+10. **断线重连**: 节点断开后 5 秒自动尝试重新连接。
 
 ### 节点发现协议
 
@@ -190,6 +195,8 @@ go build -o build\basic.exe .\examples\basic
 | `PacketTypeRelay` | 0x03 | 中继封装 |
 | `PacketTypeDiscoveryReq` | 0x04 | 节点发现请求 |
 | `PacketTypeDiscoveryResp` | 0x05 | 节点发现响应 |
+| `PacketTypeHeartbeat` | 0x06 | 心跳请求 |
+| `PacketTypeHeartbeatAck` | 0x07 | 心跳响应 |
 
 ## 依赖
 

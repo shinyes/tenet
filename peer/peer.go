@@ -10,15 +10,16 @@ import (
 
 // Peer represents a connected node
 type Peer struct {
-	ID          string
-	Addr        net.Addr     // Generalized to net.Addr
-	Conn        net.Conn     // Active TCP connection, if any
-	Transport   string       // "tcp" or "udp"
-	LinkMode    string       // "p2p" or "relay"
-	RelayTarget *net.UDPAddr // 通过中继访问的目标地址（发起方使用）
-	Session     *crypto.Session
-	LastSeen    time.Time
-	mu          sync.RWMutex
+	ID           string
+	Addr         net.Addr     // Generalized to net.Addr
+	OriginalAddr string       // 原始连接地址（用于重连）
+	Conn         net.Conn     // Active TCP connection, if any
+	Transport    string       // "tcp" or "udp"
+	LinkMode     string       // "p2p" or "relay"
+	RelayTarget  *net.UDPAddr // 通过中继访问的目标地址（发起方使用）
+	Session      *crypto.Session
+	LastSeen     time.Time
+	mu           sync.RWMutex
 }
 
 // UpgradeTransport safely updates the peer connection info
@@ -60,6 +61,29 @@ func (p *Peer) UpdateLastSeen() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.LastSeen = time.Now()
+}
+
+// GetLastSeen 返回最后活动时间
+func (p *Peer) GetLastSeen() time.Time {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.LastSeen
+}
+
+// GetOriginalAddr 返回原始连接地址
+func (p *Peer) GetOriginalAddr() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.OriginalAddr
+}
+
+// Close 关闭连接
+func (p *Peer) Close() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.Conn != nil && p.Transport == "tcp" {
+		p.Conn.Close()
+	}
 }
 
 // PeerStore manages connected peers in a thread-safe way
