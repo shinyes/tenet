@@ -5,7 +5,10 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"golang.org/x/crypto/curve25519"
 )
@@ -104,4 +107,105 @@ func (i *Identity) Sign(message []byte) []byte {
 // Verify 验证签名
 func (i *Identity) Verify(message, signature []byte) bool {
 	return ed25519.Verify(i.PublicKey, message, signature)
+}
+
+// identityData 用于 JSON 序列化的中间结构
+type identityData struct {
+	PrivateKey string `json:"private_key"` // Ed25519 私钥（hex）
+}
+
+// SaveIdentity 将身份保存到文件
+// 文件格式为 JSON，包含 Ed25519 私钥
+// 其他密钥可以从私钥派生
+func (i *Identity) SaveIdentity(path string) error {
+	// 确保目录存在
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("创建目录失败: %w", err)
+	}
+
+	data := identityData{
+		PrivateKey: hex.EncodeToString(i.PrivateKey),
+	}
+
+	jsonData, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return fmt.Errorf("序列化身份失败: %w", err)
+	}
+
+	// 使用安全的文件权限（仅所有者可读写）
+	if err := os.WriteFile(path, jsonData, 0600); err != nil {
+		return fmt.Errorf("写入身份文件失败: %w", err)
+	}
+
+	return nil
+}
+
+// LoadIdentity 从文件加载身份
+// 从存储的 Ed25519 私钥派生所有其他密钥
+func LoadIdentity(path string) (*Identity, error) {
+	jsonData, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取身份文件失败: %w", err)
+	}
+
+	var data identityData
+	if err := json.Unmarshal(jsonData, &data); err != nil {
+		return nil, fmt.Errorf("解析身份文件失败: %w", err)
+	}
+
+	privKeyBytes, err := hex.DecodeString(data.PrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("解码私钥失败: %w", err)
+	}
+
+	if len(privKeyBytes) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("无效的私钥长度: %d", len(privKeyBytes))
+	}
+
+	return IdentityFromPrivateKey(ed25519.PrivateKey(privKeyBytes))
+}
+
+// LoadOrCreateIdentity 加载或创建身份
+// 如果文件存在则加载，否则创建新身份并保存
+func LoadOrCreateIdentity(path string) (*Identity, error) {
+	// 尝试加载已有身份
+	if _, err := os.Stat(path); err == nil {
+		id, err := LoadIdentity(path)
+		if err == nil {
+			return id, nil
+		}
+		// 加载失败，创建新的
+	}
+
+	// 创建新身份
+	id, err := NewIdentity()
+	if err != nil {
+		return nil, err
+	}
+
+	// 保存到文件
+	if err := id.SaveIdentity(path); err != nil {
+		return nil, err
+	}
+
+	return id, nil
+}
+
+// IdentityExists 检查身份文件是否存在
+func IdentityExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// ExportPublicKey 导出公钥（用于分享给其他节点）
+func (i *Identity) ExportPublicKey() string {
+	return hex.EncodeToString(i.NoisePublicKey[:])
+}
+
+// GetFingerprint 获取身份指纹（用于显示和验证）
+func (i *Identity) GetFingerprint() string {
+	hash := sha256.Sum256(i.NoisePublicKey[:])
+	// 返回前 8 字节的十六进制
+	return hex.EncodeToString(hash[:8])
 }

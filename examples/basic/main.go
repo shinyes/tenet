@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/cykyes/tenet/api"
+	"github.com/cykyes/tenet/log"
 )
 
 func main() {
@@ -16,6 +17,7 @@ func main() {
 	password := flag.String("secret", "", "网络密码（相同密码的节点可以互联）")
 	connect := flag.String("p", "", "要连接的节点地址（host:port）")
 	relays := flag.String("relay", "", "中继节点列表（逗号分隔 host:port）")
+	verbose := flag.Bool("v", false, "启用详细日志输出")
 	flag.Parse()
 
 	fmt.Println("=== P2P 加密隧道示例 ===")
@@ -27,6 +29,16 @@ func main() {
 		api.WithListenPort(*port),
 		api.WithEnableRelay(true),
 		api.WithEnableHolePunch(true),
+	}
+
+	// 如果启用详细日志，注入 StdLogger
+	if *verbose {
+		logger := log.NewStdLogger(
+			log.WithLevel(log.LevelDebug),
+			log.WithPrefix("[tenet]"),
+		)
+		opts = append(opts, api.WithLogger(logger))
+		fmt.Println("详细日志已启用")
 	}
 	if *relays != "" {
 		parts := strings.Split(*relays, ",")
@@ -134,7 +146,19 @@ func main() {
 			peerID := parts[1]
 			message := parts[2]
 			if err := tunnel.Send(peerID, []byte(message)); err != nil {
-				fmt.Printf("发送失败: %v\n", err)
+				errMsg := err.Error()
+				switch {
+				case strings.Contains(errMsg, "不能向本节点发送数据"):
+					fmt.Println("发送失败: 不能向自己发送消息")
+				case strings.Contains(errMsg, "未找到对等节点"):
+					fmt.Printf("发送失败: 未找到节点 %s，请先连接该节点\n", peerID)
+				case strings.Contains(errMsg, "对等节点会话未建立"):
+					fmt.Printf("发送失败: 与节点 %s 的加密会话尚未建立，请稍后重试\n", peerID)
+				case strings.Contains(errMsg, "UDP 地址无效"):
+					fmt.Println("发送失败: 对等节点的地址无效")
+				default:
+					fmt.Printf("发送失败: %v\n", err)
+				}
 			} else {
 				fmt.Println("已发送")
 			}

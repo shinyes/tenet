@@ -8,6 +8,39 @@ import (
 	"github.com/cykyes/tenet/crypto"
 )
 
+// ConnState 连接状态
+type ConnState int
+
+const (
+	// StateDisconnected 已断开
+	StateDisconnected ConnState = iota
+	// StateConnecting 正在连接（发起握手中）
+	StateConnecting
+	// StateHandshaking 握手中（交换密钥）
+	StateHandshaking
+	// StateConnected 已连接
+	StateConnected
+	// StateDisconnecting 正在断开（发送关闭通知中）
+	StateDisconnecting
+)
+
+func (s ConnState) String() string {
+	switch s {
+	case StateDisconnected:
+		return "Disconnected"
+	case StateConnecting:
+		return "Connecting"
+	case StateHandshaking:
+		return "Handshaking"
+	case StateConnected:
+		return "Connected"
+	case StateDisconnecting:
+		return "Disconnecting"
+	default:
+		return "Unknown"
+	}
+}
+
 // Peer represents a connected node
 type Peer struct {
 	ID           string
@@ -19,7 +52,19 @@ type Peer struct {
 	RelayTarget  *net.UDPAddr // 通过中继访问的目标地址（发起方使用）
 	Session      *crypto.Session
 	LastSeen     time.Time
-	mu           sync.RWMutex
+
+	// 连接状态
+	State ConnState
+
+	// 连接统计
+	ConnectedAt    time.Time     // 连接建立时间
+	BytesSent      int64         // 发送字节数
+	BytesReceived  int64         // 接收字节数
+	MessagesSent   int64         // 发送消息数
+	MessagesRecv   int64         // 接收消息数
+	ConnectLatency time.Duration // 连接建立延迟
+
+	mu sync.RWMutex
 }
 
 // UpgradeTransport safely updates the peer connection info
@@ -81,9 +126,75 @@ func (p *Peer) GetOriginalAddr() string {
 func (p *Peer) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.State = StateDisconnected
 	if p.Conn != nil && p.Transport == "tcp" {
 		p.Conn.Close()
 	}
+}
+
+// SetState 设置连接状态
+func (p *Peer) SetState(state ConnState) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.State = state
+	if state == StateConnected && p.ConnectedAt.IsZero() {
+		p.ConnectedAt = time.Now()
+	}
+}
+
+// GetState 获取连接状态
+func (p *Peer) GetState() ConnState {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.State
+}
+
+// AddBytesSent 增加发送字节统计
+func (p *Peer) AddBytesSent(n int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.BytesSent += n
+	p.MessagesSent++
+}
+
+// AddBytesReceived 增加接收字节统计
+func (p *Peer) AddBytesReceived(n int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.BytesReceived += n
+	p.MessagesRecv++
+}
+
+// GetStats 获取连接统计
+func (p *Peer) GetStats() PeerStats {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return PeerStats{
+		State:          p.State,
+		Transport:      p.Transport,
+		LinkMode:       p.LinkMode,
+		ConnectedAt:    p.ConnectedAt,
+		LastSeen:       p.LastSeen,
+		BytesSent:      p.BytesSent,
+		BytesReceived:  p.BytesReceived,
+		MessagesSent:   p.MessagesSent,
+		MessagesRecv:   p.MessagesRecv,
+		ConnectLatency: p.ConnectLatency,
+	}
+}
+
+// PeerStats 节点统计信息
+type PeerStats struct {
+	State          ConnState
+	Transport      string
+	LinkMode       string
+	ConnectedAt    time.Time
+	LastSeen       time.Time
+	BytesSent      int64
+	BytesReceived  int64
+	MessagesSent   int64
+	MessagesRecv   int64
+	ConnectLatency time.Duration
 }
 
 // PeerStore manages connected peers in a thread-safe way

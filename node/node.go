@@ -1,4 +1,4 @@
-﻿package node
+package node
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cykyes/tenet/crypto"
+	"github.com/cykyes/tenet/metrics"
 	"github.com/cykyes/tenet/nat"
 	"github.com/cykyes/tenet/peer"
 	"github.com/cykyes/tenet/transport"
@@ -62,6 +63,10 @@ type Node struct {
 	relayForward       map[string]*net.UDPAddr
 	relayPendingTarget map[string]*net.UDPAddr // relayAddr -> targetAddr
 	relayInbound       map[string]bool
+
+	metrics   *metrics.Collector // 指标收集器
+	natProber *nat.NATProber     // NAT 探测器
+	natInfo   *nat.NATInfo       // 本机 NAT 信息
 }
 
 // NewNode 创建一个新的 Node 实例
@@ -71,9 +76,21 @@ func NewNode(opts ...Option) (*Node, error) {
 		opt(cfg)
 	}
 
-	id, err := NewIdentity()
+	// 验证配置
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("配置无效: %w", err)
+	}
+
+	// 根据配置决定是加载还是创建身份
+	var id *Identity
+	var err error
+	if cfg.IdentityPath != "" {
+		id, err = LoadOrCreateIdentity(cfg.IdentityPath)
+	} else {
+		id, err = NewIdentity()
+	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to create identity: %w", err)
+		return nil, fmt.Errorf("创建身份失败: %w", err)
 	}
 
 	return &Node{
@@ -87,6 +104,7 @@ func NewNode(opts ...Option) (*Node, error) {
 		relayForward:       make(map[string]*net.UDPAddr),
 		relayPendingTarget: make(map[string]*net.UDPAddr),
 		relayInbound:       make(map[string]bool),
+		metrics:            metrics.NewCollector(),
 	}, nil
 }
 
@@ -97,21 +115,25 @@ func (n *Node) ID() string {
 
 // Start 启动节点监听
 func (n *Node) Start() error {
-	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", n.Config.ListenPort))
+	// 确定监听地址
+	listenAddr := fmt.Sprintf(":%d", n.Config.ListenPort)
+
+	// UDP 监听
+	addr, err := net.ResolveUDPAddr("udp", listenAddr)
 	if err != nil {
-		return fmt.Errorf("failed to resolve addr: %w", err)
+		return fmt.Errorf("解析地址失败: %w", err)
 	}
 
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
-		return fmt.Errorf("failed to listen: %w", err)
+		return fmt.Errorf("监听失败: %w", err)
 	}
 
 	n.conn = conn
 	udpAddr, ok := conn.LocalAddr().(*net.UDPAddr)
 	if !ok {
 		conn.Close()
-		return fmt.Errorf("unexpected address type: %T", conn.LocalAddr())
+		return fmt.Errorf("意外的地址类型: %T", conn.LocalAddr())
 	}
 	n.LocalAddr = udpAddr
 
@@ -125,7 +147,7 @@ func (n *Node) Start() error {
 	for _, addrStr := range n.Config.RelayNodes {
 		relayAddr, err := net.ResolveUDPAddr("udp", addrStr)
 		if err != nil {
-			fmt.Printf("中继地址解析失败: %s: %v\n", addrStr, err)
+			n.Config.Logger.Error("中继地址解析失败: %s: %v", addrStr, err)
 			continue
 		}
 		n.relayManager.AddRelay(addrStr, relayAddr)
@@ -135,35 +157,69 @@ func (n *Node) Start() error {
 	// 启动 TCP 监听（用于接入连接与打洞基础）
 	// 使用 transport.ListenConfig（SO_REUSEADDR）以便打洞逻辑也能绑定该端口
 	lc := transport.ListenConfig()
-	listener, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf(":%d", n.Config.ListenPort))
+	listener, err := lc.Listen(context.Background(), "tcp", listenAddr)
 	if err != nil {
 		conn.Close()
-		return fmt.Errorf("failed to listen tcp: %w", err)
+		return fmt.Errorf("TCP 监听失败: %w", err)
 	}
 	tcpListener, ok := listener.(*net.TCPListener)
 	if !ok {
 		listener.Close()
 		conn.Close()
-		return fmt.Errorf("unexpected listener type: %T", listener)
+		return fmt.Errorf("意外的监听器类型: %T", listener)
 	}
 	n.tcpListener = tcpListener
+
+	// 初始化 NAT 探测器
+	n.natProber = nat.NewNATProber(n.conn)
 
 	n.wg.Add(3) // 1 个用于 UDP 读，1 个用于 TCP Accept，1 个用于心跳
 	go n.handleRead()
 	go n.acceptTCP()
 	go n.heartbeatLoop()
 
+	n.Config.Logger.Info("节点已启动，监听 %s (ID: %s)", listenAddr, n.localPeerID[:8])
 	return nil
 }
 
 // Stop 停止节点
 func (n *Node) Stop() error {
+	return n.GracefulStop(context.Background())
+}
+
+// GracefulStop 优雅关闭节点
+// 向所有对端发送关闭通知，等待现有数据发送完成，然后关闭连接
+func (n *Node) GracefulStop(ctx context.Context) error {
 	select {
 	case <-n.closing:
 		return nil
 	default:
-		close(n.closing)
 	}
+
+	n.Config.Logger.Info("正在优雅关闭节点...")
+
+	// 通知所有对端我们即将关闭
+	peerIDs := n.Peers.IDs()
+	for _, peerID := range peerIDs {
+		p, ok := n.Peers.Get(peerID)
+		if !ok {
+			continue
+		}
+		p.SetState(peer.StateDisconnecting)
+		// 发送关闭通知（使用特殊的心跳包）
+		transport, addr, conn := p.GetTransportInfo()
+		goodbyePacket := n.buildGoodbyePacket()
+		n.sendRaw(conn, addr, transport, goodbyePacket)
+	}
+
+	// 等待一小段时间让关闭通知发送出去
+	select {
+	case <-ctx.Done():
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// 关闭节点
+	close(n.closing)
 
 	if n.conn != nil {
 		n.conn.Close()
@@ -172,14 +228,32 @@ func (n *Node) Stop() error {
 		n.tcpListener.Close()
 	}
 
+	// 关闭所有对端连接
+	for _, peerID := range peerIDs {
+		if p, ok := n.Peers.Get(peerID); ok {
+			p.Close()
+		}
+	}
+
 	n.wg.Wait()
+	n.Config.Logger.Info("节点已关闭")
 	return nil
+}
+
+// buildGoodbyePacket 构建关闭通知包
+func (n *Node) buildGoodbyePacket() []byte {
+	// 使用特殊的心跳包类型作为关闭通知
+	packet := make([]byte, 6)
+	copy(packet[0:4], []byte(MagicBytes))
+	packet[4] = PacketTypeHeartbeat
+	packet[5] = 0xFF // 特殊标记表示即将关闭
+	return packet
 }
 
 // Connect 通过 TCP/UDP 打洞发起连接
 func (n *Node) Connect(addrStr string) error {
 	if n.conn == nil || n.LocalAddr == nil {
-		return fmt.Errorf("node is not started")
+		return fmt.Errorf("节点未启动")
 	}
 	rUDPAddr, err := net.ResolveUDPAddr("udp", addrStr)
 	if err != nil {
@@ -213,23 +287,34 @@ func (n *Node) Connect(addrStr string) error {
 	// 构造握手包（UDP）
 	packetUDP := make([]byte, 5+len(msgUDP))
 	copy(packetUDP[0:4], []byte("TENT"))
-	packetUDP[4] = 0x01 // Handshake Type
+	packetUDP[4] = PacketTypeHandshake
 	copy(packetUDP[5:], msgUDP)
 
 	// 构造握手包（TCP）
 	packetTCP := make([]byte, 5+len(msgTCP))
 	copy(packetTCP[0:4], []byte("TENT"))
-	packetTCP[4] = 0x01 // Handshake Type
+	packetTCP[4] = PacketTypeHandshake
 	copy(packetTCP[5:], msgTCP)
 
 	// 注册待处理握手状态（发起方），按传输前缀区分
+	udpStateKey := "udp://" + rUDPAddr.String()
+	tcpStateKey := "tcp://" + rTCPAddr.String()
+
 	n.mu.Lock()
-	n.pendingHandshakes["udp://"+rUDPAddr.String()] = hsUDP
+	n.pendingHandshakes[udpStateKey] = hsUDP
 	if rTCPAddr != nil {
-		key := "tcp://" + rTCPAddr.String()
-		n.pendingHandshakes[key] = hsTCP
+		n.pendingHandshakes[tcpStateKey] = hsTCP
 	}
 	n.mu.Unlock()
+
+	// 设置握手超时清理（30秒后自动清理未完成的握手状态）
+	go func() {
+		time.Sleep(30 * time.Second)
+		n.mu.Lock()
+		delete(n.pendingHandshakes, udpStateKey)
+		delete(n.pendingHandshakes, tcpStateKey)
+		n.mu.Unlock()
+	}()
 
 	// --- 策略：TCP 与 UDP 同时尝试 ---
 
@@ -239,18 +324,24 @@ func (n *Node) Connect(addrStr string) error {
 		Err       error
 	}
 	resultChan := make(chan ConnectResult, 2)
-	// 使用独立的 context 让 TCP 打洞在本函数返回后仍可继续
-	// 由于需要“迟到升级”，让 TCP 打洞自行完成并超时退出
-	punchCtx := context.Background()
+
+	// 使用可取消的 context，在节点关闭时取消打洞
+	punchCtx, punchCancel := context.WithCancel(context.Background())
+	go func() {
+		select {
+		case <-n.closing:
+			punchCancel()
+		case <-time.After(15 * time.Second):
+			punchCancel()
+		}
+	}()
 
 	// 1. TCP 打洞
 	go func() {
-		// 为打洞创建超时上下文
 		ctx, cancel := context.WithTimeout(punchCtx, 10*time.Second)
 		defer cancel()
 
 		puncher := nat.NewTCPHolePuncher()
-		// 使用与 UDP 相同的本地端口
 		conn, err := puncher.Punch(ctx, n.LocalAddr.Port, rTCPAddr)
 		if err != nil {
 			resultChan <- ConnectResult{Err: err}
@@ -261,10 +352,6 @@ func (n *Node) Connect(addrStr string) error {
 
 	// 2. UDP 打洞（简单发送）
 	go func() {
-		// 仅发送数据包；收到响应由 handleRead 处理
-		// UDP 无连接，发送即视为发起成功，作为 TCP 失败时的兜底
-		// 多次发送以打洞
-		// 使用本地超时控制发送循环
 		timeout := time.After(2 * time.Second)
 		for {
 			select {
@@ -278,13 +365,11 @@ func (n *Node) Connect(addrStr string) error {
 		}
 	}()
 
-	// 等待第一个可用结果，理想情况下 TCP 优先
-	// 等待第一个结果或超时
+	// 等待第一个可用结果
 	select {
 	case res := <-resultChan:
 		if res.Transport == "tcp" && res.Conn != nil {
-			// TCP 成功！
-			// TCP 帧格式: [Len(2)] [Packet]
+			// TCP 成功
 			length := uint16(len(packetTCP))
 			frame := make([]byte, 2+len(packetTCP))
 			frame[0] = byte(length >> 8)
@@ -300,8 +385,7 @@ func (n *Node) Connect(addrStr string) error {
 			go n.handleTCP(res.Conn)
 			return nil
 		} else if res.Transport == "udp" {
-			// UDP 已发送，作为有效兜底
-			// 但需要处理可能的 TCP 迟到成功
+			// UDP 已发送，处理可能的 TCP 迟到成功
 			if n.Config.EnableRelay {
 				addrKey := rUDPAddr.String()
 				go func() {
@@ -315,15 +399,11 @@ func (n *Node) Connect(addrStr string) error {
 				}()
 			}
 			go func() {
-				// 等待 TCP 结果（可能已在通道中或即将到达）
-				// 循环直到 TCP 成功或超时
 				timeout := time.After(10 * time.Second)
 				for {
 					select {
 					case res2 := <-resultChan:
 						if res2.Transport == "tcp" && res2.Conn != nil {
-							// TCP 迟到成功，执行升级逻辑
-							// 通过 TCP 发送握手
 							length := uint16(len(packetTCP))
 							frame := make([]byte, 2+len(packetTCP))
 							frame[0] = byte(length >> 8)
@@ -335,17 +415,12 @@ func (n *Node) Connect(addrStr string) error {
 								res2.Conn.Close()
 								return
 							}
-
-							// 开始处理 TCP，握手成功后由 processHandshake 触发升级
 							go n.handleTCP(res2.Conn)
-							return // 完成
+							return
 						} else if res2.Conn != nil {
-							// 非 TCP 但连接不为空，关闭以避免泄漏
 							res2.Conn.Close()
 						}
-						// 忽略其他结果（例如 UDP 迟到失败）
 					case <-timeout:
-						// TCP 最终超时，排空通道中可能残留的连接
 						select {
 						case res2 := <-resultChan:
 							if res2.Conn != nil {
@@ -357,7 +432,6 @@ func (n *Node) Connect(addrStr string) error {
 					}
 				}
 			}()
-
 			return nil
 		}
 		if res.Err != nil {
@@ -368,25 +442,30 @@ func (n *Node) Connect(addrStr string) error {
 			}
 			return res.Err
 		}
-		return fmt.Errorf("connection failed")
+		return fmt.Errorf("连接失败")
 	case <-time.After(5 * time.Second):
 		if n.relayManager != nil {
 			if err := n.connectViaRelay(addrStr); err == nil {
 				return nil
 			}
 		}
-		return fmt.Errorf("connection timeout")
+		return fmt.Errorf("连接超时")
 	}
 }
 
 // Send 向对等节点发送数据
 func (n *Node) Send(peerID string, data []byte) error {
+	// 检查是否尝试向自己发送
+	if peerID == n.ID() {
+		return fmt.Errorf("不能向本节点发送数据")
+	}
+
 	p, ok := n.Peers.Get(peerID)
 	if !ok {
-		return fmt.Errorf("peer not found: %s", peerID)
+		return fmt.Errorf("未找到对等节点: %s", peerID)
 	}
 	if p.Session == nil {
-		return fmt.Errorf("peer session not established")
+		return fmt.Errorf("对等节点会话未建立")
 	}
 
 	encrypted, err := p.Session.Encrypt(data)
@@ -394,16 +473,15 @@ func (n *Node) Send(peerID string, data []byte) error {
 		return err
 	}
 
-	// 包格式: [Magic(4)] [Type(1)] [Verified(1)?] [Data]
+	// 包格式: [Magic(4)] [Type(1)] [Data]
 	packet := make([]byte, 5+len(encrypted))
 	copy(packet[0:4], []byte("TENT"))
-	packet[4] = 0x02 // Data Type
+	packet[4] = PacketTypeData
 	copy(packet[5:], encrypted)
 
 	transport, addr, conn := p.GetTransportInfo()
 
 	if transport == "tcp" && conn != nil {
-		// TCP 帧格式: [Len(2)] [Packet]
 		length := uint16(len(packet))
 		frame := make([]byte, 2+len(packet))
 		frame[0] = byte(length >> 8)
@@ -416,14 +494,13 @@ func (n *Node) Send(peerID string, data []byte) error {
 	if p.LinkMode == "relay" {
 		if relayAddr, ok := addr.(*net.UDPAddr); ok {
 			if p.RelayTarget != nil {
-				relayPacket, err := n.buildRelayPacket(0x01, p.RelayTarget, packet)
+				relayPacket, err := n.buildRelayPacket(RelayModeForward, p.RelayTarget, packet)
 				if err != nil {
 					return err
 				}
 				_, err = n.conn.WriteToUDP(relayPacket, relayAddr)
 				return err
 			}
-			// 没有目标地址时，直接发送给中继，由中继根据映射转发
 			_, err = n.conn.WriteToUDP(packet, relayAddr)
 			return err
 		}
@@ -432,7 +509,7 @@ func (n *Node) Send(peerID string, data []byte) error {
 	// 回退到 UDP
 	udpAddr, ok := addr.(*net.UDPAddr)
 	if !ok {
-		return fmt.Errorf("invalid udp address for peer")
+		return fmt.Errorf("对等节点的 UDP 地址无效")
 	}
 	_, err = n.conn.WriteToUDP(packet, udpAddr)
 	return err
@@ -452,21 +529,16 @@ func (n *Node) acceptTCP() {
 			case <-n.closing:
 				return
 			default:
-				// Log error?
 				continue
 			}
 		}
-
-		// 处理新连接
 		go n.handleTCP(conn)
 	}
 }
 
 // handleTCP 处理 TCP 入站连接
 func (n *Node) handleTCP(conn net.Conn) {
-	defer func() {
-		conn.Close()
-	}()
+	defer conn.Close()
 
 	// 设置 TCP KeepAlive
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
@@ -474,38 +546,35 @@ func (n *Node) handleTCP(conn net.Conn) {
 		tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
-	// 按帧读取
-	// [Len(2)] [Packet...]
+	// 使用缓冲池
 	header := make([]byte, 2)
-	const maxTCPFrameSize = 32 * 1024
+	frameBuf := GetTCPFrameBuffer()
+	defer PutTCPFrameBuffer(frameBuf)
+
 	for {
-		// 读取长度
 		_, err := io.ReadFull(conn, header)
 		if err != nil {
 			if err != io.EOF {
-				fmt.Printf("TCP read error from %s: %v\n", conn.RemoteAddr(), err)
+				n.Config.Logger.Error("从 %s 读取 TCP 数据出错: %v", conn.RemoteAddr(), err)
 			}
 			return
 		}
 		length := uint16(header[0])<<8 | uint16(header[1])
-		if length == 0 || length > maxTCPFrameSize {
+		if length == 0 || length > TCPFrameSize {
 			return
 		}
 
-		// 读取包体
-		buf := make([]byte, length)
+		buf := (*frameBuf)[:length]
 		_, err = io.ReadFull(conn, buf)
 		if err != nil {
 			return
 		}
 
-		// 处理包
 		if length < 5 || string(buf[0:4]) != "TENT" {
 			continue
 		}
 
 		packetType := buf[4]
-
 		payload := make([]byte, length-5)
 		copy(payload, buf[5:])
 
@@ -536,7 +605,11 @@ func (n *Node) OnPeerDisconnected(f func(string)) {
 func (n *Node) handleRead() {
 	defer n.wg.Done()
 
-	buf := make([]byte, 65535)
+	// 使用缓冲池
+	bufPtr := GetUDPBuffer()
+	defer PutUDPBuffer(bufPtr)
+	buf := *bufPtr
+
 	for {
 		select {
 		case <-n.closing:
@@ -550,17 +623,14 @@ func (n *Node) handleRead() {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
 			}
-			// If closed, return
 			select {
 			case <-n.closing:
 				return
 			default:
-				// Log error?
 			}
 			continue
 		}
 
-		// 基本包校验
 		if count < 5 {
 			continue
 		}
@@ -572,7 +642,7 @@ func (n *Node) handleRead() {
 		payload := make([]byte, count-5)
 		copy(payload, buf[5:count])
 
-		if packetType == 0x03 {
+		if packetType == PacketTypeRelay {
 			n.handleRelayPacket(addr, payload)
 			continue
 		}
@@ -594,424 +664,24 @@ func (n *Node) handleRead() {
 // handlePacket 处理通用包
 func (n *Node) handlePacket(conn net.Conn, remoteAddr net.Addr, transport string, packetType byte, payload []byte) {
 	switch packetType {
-	case PacketTypeHandshake: // 握手
+	case PacketTypeHandshake:
 		n.processHandshake(conn, remoteAddr, transport, payload)
-	case PacketTypeData: // 数据
+	case PacketTypeData:
 		n.processData(remoteAddr, payload)
-	case PacketTypeDiscoveryReq: // 节点发现请求
+	case PacketTypeDiscoveryReq:
 		n.processDiscoveryRequest(conn, remoteAddr, transport)
-	case PacketTypeDiscoveryResp: // 节点发现响应
+	case PacketTypeDiscoveryResp:
 		n.processDiscoveryResponse(payload)
-	case PacketTypeHeartbeat: // 心跳请求
+	case PacketTypeHeartbeat:
 		n.processHeartbeat(conn, remoteAddr, transport)
-	case PacketTypeHeartbeatAck: // 心跳响应
+	case PacketTypeHeartbeatAck:
 		n.processHeartbeatAck(remoteAddr)
-	}
-}
-
-// processHandshake 处理握手消息
-func (n *Node) processHandshake(conn net.Conn, remoteAddr net.Addr, transport string, payload []byte) {
-	n.mu.Lock()
-	defer func() {
-		n.mu.Unlock()
-	}()
-
-	addrStr := remoteAddr.String()
-	// 使用传输相关的 key
-	stateKey := fmt.Sprintf("%s://%s", transport, addrStr)
-	hs, exists := n.pendingHandshakes[stateKey]
-
-	// 若不存在则创建响应方握手
-	if !exists {
-		var err error
-		hs, err = crypto.NewResponderHandshake(
-			n.Identity.NoisePrivateKey[:],
-			n.Identity.NoisePublicKey[:],
-			[]byte(n.Config.NetworkPassword),
-		)
-		if err != nil {
-			fmt.Printf("Error creating handshake: %v\n", err)
-			return
-		}
-		n.pendingHandshakes[stateKey] = hs
-	}
-
-	// 处理消息
-	response, session, err := hs.ProcessMessage(payload)
-	if err != nil {
-		// 智能错误处理：
-		// 若握手失败（如“消息过短”或“鉴权失败”），
-		// 先检查是否已连接该对端（或地址）。
-		// 这可处理并发打洞时的 UDP 重传或迟到包。
-		// n.mu.Lock() // 已持有锁
-		_, isConnected := n.addrToPeer[addrStr]
-		// n.mu.Unlock()
-
-		if isConnected {
-			// 这可能是已建立连接的冗余包。
-			// 结构正确但状态无效（重放/迟到）。
-			// 可安全忽略以保持输出简洁。
-			return
-		}
-
-		// 真实的握手失败
-		fmt.Printf("Handshake error from %s: %v\n", addrStr, err)
-		delete(n.pendingHandshakes, stateKey)
-		return
-	}
-
-	// 如需响应则发送
-	if response != nil {
-		packet := make([]byte, 5+len(response))
-		copy(packet[0:4], []byte("TENT"))
-		packet[4] = 0x01 // Handshake Type
-		copy(packet[5:], response)
-
-		n.sendRaw(conn, remoteAddr, transport, packet)
-	}
-
-	// 如果会话建立
-	if session != nil {
-		// 握手完成
-		delete(n.pendingHandshakes, stateKey)
-
-		remotePub := session.RemotePublicKey()
-		// 使用一致的 ID 推导（同 identity.go）
-		// ID = SHA256(PublicKey)[:16]
-		idHash := sha256.Sum256(remotePub)
-		peerID := fmt.Sprintf("%x", idHash[:16])
-
-		// 传输升级逻辑：
-		existingPeer, ok := n.Peers.Get(peerID)
-		if ok {
-			// 对端已存在，检查是否需要升级到 TCP
-			if transport == "tcp" && existingPeer.Transport != "tcp" {
-				fmt.Printf(">>> 升级成功: 节点 %s 已切换至 TCP 链路 <<<\n", peerID[:8])
-				existingPeer.UpgradeTransport(remoteAddr, conn, transport, session)
-
-				// n.mu is already held
-				n.addrToPeer[addrStr] = peerID
-				n.registerRelayCandidate(peerID, remoteAddr)
-				return
-			}
-			if target, ok := n.relayPendingTarget[addrStr]; ok {
-				existingPeer.SetLinkMode("relay", target)
-				delete(n.relayPendingTarget, addrStr)
-			} else if inbound := n.relayInbound[addrStr]; inbound {
-				existingPeer.SetLinkMode("relay", nil)
-				delete(n.relayInbound, addrStr)
-			}
-			// 已是 TCP 或为冗余 UDP，仅更新 LastSeen
-			existingPeer.UpdateLastSeen()
-			n.registerRelayCandidate(peerID, remoteAddr)
-			return
-		}
-
-		linkMode := "p2p"
-		var relayTarget *net.UDPAddr
-		if target, ok := n.relayPendingTarget[addrStr]; ok {
-			linkMode = "relay"
-			relayTarget = target
-			delete(n.relayPendingTarget, addrStr)
-		}
-		if inbound := n.relayInbound[addrStr]; inbound {
-			linkMode = "relay"
-			delete(n.relayInbound, addrStr)
-		}
-
-		// 检查是否超过最大连接数
-		if n.Config.MaxPeers > 0 && n.Peers.Count() >= n.Config.MaxPeers {
-			fmt.Printf("已达到最大连接数 %d，拒绝新连接 %s\n", n.Config.MaxPeers, peerID[:8])
-			return
-		}
-
-		// 新对端
-		p := &peer.Peer{
-			ID:           peerID,
-			Addr:         remoteAddr,
-			OriginalAddr: addrStr,
-			Conn:         conn,
-			Transport:    transport,
-			LinkMode:     linkMode,
-			RelayTarget:  relayTarget,
-			Session:      session,
-			LastSeen:     time.Now(),
-		}
-		n.Peers.Add(p)
-		// n.mu 已由 processHandshake 持有
-		n.addrToPeer[addrStr] = peerID
-		n.registerRelayCandidate(peerID, remoteAddr)
-
-		// 向新连接的节点请求其已知的节点列表（节点发现）
-		go n.sendDiscoveryRequest(p)
-
-		if n.onPeerConnected != nil {
-			go n.onPeerConnected(peerID)
-		}
-	}
-}
-
-// sendDiscoveryRequest 向指定节点发送节点发现请求
-func (n *Node) sendDiscoveryRequest(p *peer.Peer) {
-	// 构建发现请求包：TENT + 0x04 + 空payload
-	packet := make([]byte, 5)
-	copy(packet[0:4], []byte("TENT"))
-	packet[4] = 0x04
-
-	transport, addr, conn := p.GetTransportInfo()
-	n.sendRaw(conn, addr, transport, packet)
-}
-
-// processDiscoveryRequest 处理节点发现请求，返回已知节点列表
-func (n *Node) processDiscoveryRequest(conn net.Conn, remoteAddr net.Addr, transport string) {
-	n.mu.RLock()
-	peerIDs := n.Peers.IDs()
-	n.mu.RUnlock()
-
-	// 构建响应：收集所有已知节点的 (PeerID, Addr) 对
-	// 格式: [Count(2 bytes)] [Entry...]，每个 Entry: [PeerIDLen(1)] [PeerID] [AddrLen(1)] [Addr]
-	var entries []byte
-	count := 0
-
-	for _, pid := range peerIDs {
-		p, ok := n.Peers.Get(pid)
-		if !ok {
-			continue
-		}
-		// 获取节点地址
-		_, addr, _ := p.GetTransportInfo()
-		if addr == nil {
-			continue
-		}
-		addrStr := addr.String()
-
-		// 编码 entry
-		pidBytes := []byte(pid)
-		addrBytes := []byte(addrStr)
-		if len(pidBytes) > 255 || len(addrBytes) > 255 {
-			continue
-		}
-
-		entry := make([]byte, 1+len(pidBytes)+1+len(addrBytes))
-		entry[0] = byte(len(pidBytes))
-		copy(entry[1:1+len(pidBytes)], pidBytes)
-		entry[1+len(pidBytes)] = byte(len(addrBytes))
-		copy(entry[2+len(pidBytes):], addrBytes)
-
-		entries = append(entries, entry...)
-		count++
-	}
-
-	// 构建完整响应包
-	payload := make([]byte, 2+len(entries))
-	payload[0] = byte(count >> 8)
-	payload[1] = byte(count & 0xFF)
-	copy(payload[2:], entries)
-
-	packet := make([]byte, 5+len(payload))
-	copy(packet[0:4], []byte("TENT"))
-	packet[4] = 0x05
-	copy(packet[5:], payload)
-
-	n.sendRaw(conn, remoteAddr, transport, packet)
-}
-
-// processDiscoveryResponse 处理节点发现响应，尝试连接未知节点
-func (n *Node) processDiscoveryResponse(payload []byte) {
-	if len(payload) < 2 {
-		return
-	}
-
-	count := int(payload[0])<<8 | int(payload[1])
-	offset := 2
-
-	for i := 0; i < count && offset < len(payload); i++ {
-		// 解析 PeerID
-		if offset >= len(payload) {
-			break
-		}
-		pidLen := int(payload[offset])
-		offset++
-		if offset+pidLen > len(payload) {
-			break
-		}
-		peerID := string(payload[offset : offset+pidLen])
-		offset += pidLen
-
-		// 解析 Addr
-		if offset >= len(payload) {
-			break
-		}
-		addrLen := int(payload[offset])
-		offset++
-		if offset+addrLen > len(payload) {
-			break
-		}
-		addrStr := string(payload[offset : offset+addrLen])
-		offset += addrLen
-
-		// 跳过自己
-		if peerID == n.localPeerID {
-			continue
-		}
-
-		// 跳过已连接的节点
-		if _, exists := n.Peers.Get(peerID); exists {
-			continue
-		}
-
-		// 尝试连接新发现的节点
-		fmt.Printf("[发现] 通过节点发现发现新节点 %s (%s)，尝试连接...\n", peerID[:8], addrStr)
-		go func(addr string) {
-			if err := n.Connect(addr); err != nil {
-				fmt.Printf("[发现] 连接 %s 失败: %v\n", addr, err)
-			}
-		}(addrStr)
-	}
-}
-
-// connectViaRelay 使用中继发送握手包
-func (n *Node) connectViaRelay(targetAddrStr string) error {
-	if n.relayManager == nil {
-		return fmt.Errorf("relay manager not initialized")
-	}
-
-	targetAddr, err := net.ResolveUDPAddr("udp", targetAddrStr)
-	if err != nil {
-		return err
-	}
-
-	relay, err := n.relayManager.SelectBestRelay()
-	if err != nil {
-		return err
-	}
-
-	hs, msg, err := crypto.NewInitiatorHandshake(
-		n.Identity.NoisePrivateKey[:],
-		n.Identity.NoisePublicKey[:],
-		[]byte(n.Config.NetworkPassword),
-	)
-	if err != nil {
-		return err
-	}
-
-	packet := make([]byte, 5+len(msg))
-	copy(packet[0:4], []byte("TENT"))
-	packet[4] = 0x01
-	copy(packet[5:], msg)
-
-	relayPacket, err := n.buildRelayPacket(0x01, targetAddr, packet)
-	if err != nil {
-		return err
-	}
-
-	n.mu.Lock()
-	n.pendingHandshakes["udp://"+relay.Addr.String()] = hs
-	n.relayPendingTarget[relay.Addr.String()] = targetAddr
-	n.mu.Unlock()
-
-	_, err = n.conn.WriteToUDP(relayPacket, relay.Addr)
-	return err
-}
-
-// registerRelayCandidate 将已连接节点作为潜在中继候选
-// 所有节点都会注册候选，但只有开启 EnableRelay 的节点才会响应转发请求
-func (n *Node) registerRelayCandidate(peerID string, remoteAddr net.Addr) {
-	if n.relayManager == nil {
-		return
-	}
-	udpAddr, ok := remoteAddr.(*net.UDPAddr)
-	if !ok || udpAddr == nil {
-		return
-	}
-	addrStr := udpAddr.String()
-	if n.relayAddrSet[addrStr] {
-		return
-	}
-	n.relayManager.AddRelay(peerID, udpAddr)
-	n.relayAddrSet[addrStr] = true
-}
-
-// buildRelayPacket 构造中继封装包
-func (n *Node) buildRelayPacket(mode byte, targetAddr *net.UDPAddr, inner []byte) ([]byte, error) {
-	if targetAddr == nil {
-		return nil, fmt.Errorf("targetAddr is nil")
-	}
-	addrStr := targetAddr.String()
-	if len(addrStr) > 255 {
-		return nil, fmt.Errorf("targetAddr too long")
-	}
-	payload := make([]byte, 2+len(addrStr)+len(inner))
-	payload[0] = mode
-	payload[1] = byte(len(addrStr))
-	copy(payload[2:], []byte(addrStr))
-	copy(payload[2+len(addrStr):], inner)
-
-	packet := make([]byte, 5+len(payload))
-	copy(packet[0:4], []byte("TENT"))
-	packet[4] = 0x03
-	copy(packet[5:], payload)
-	return packet, nil
-}
-
-// handleRelayPacket 处理中继封装包
-func (n *Node) handleRelayPacket(origin *net.UDPAddr, payload []byte) {
-	if !n.Config.EnableRelay {
-		return
-	}
-	if origin == nil || len(payload) < 2 {
-		return
-	}
-	mode := payload[0]
-	addrLen := int(payload[1])
-	if len(payload) < 2+addrLen {
-		return
-	}
-	addrStr := string(payload[2 : 2+addrLen])
-	inner := payload[2+addrLen:]
-	if len(inner) == 0 {
-		return
-	}
-	targetAddr, err := net.ResolveUDPAddr("udp", addrStr)
-	if err != nil {
-		return
-	}
-
-	if mode == 0x01 {
-		// 作为中继转发给目标
-		n.mu.Lock()
-		n.relayForward[targetAddr.String()] = origin
-		n.mu.Unlock()
-
-		forwardPacket, err := n.buildRelayPacket(0x02, targetAddr, inner)
-		if err != nil {
-			return
-		}
-		n.conn.WriteToUDP(forwardPacket, targetAddr)
-		return
-	}
-
-	if mode == 0x02 {
-		// 目标侧解封装并本地处理
-		if len(inner) < 5 || string(inner[0:4]) != "TENT" {
-			return
-		}
-		packetType := inner[4]
-		payload := make([]byte, len(inner)-5)
-		copy(payload, inner[5:])
-
-		n.mu.Lock()
-		n.relayInbound[origin.String()] = true
-		n.mu.Unlock()
-
-		n.handlePacket(nil, origin, "udp", packetType, payload)
 	}
 }
 
 // processData 处理数据消息
 func (n *Node) processData(remoteAddr net.Addr, payload []byte) {
 	n.mu.RLock()
-
 	peerID, ok := n.addrToPeer[remoteAddr.String()]
 	n.mu.RUnlock()
 
@@ -1030,6 +700,10 @@ func (n *Node) processData(remoteAddr net.Addr, payload []byte) {
 
 	plaintext, err := p.Session.Decrypt(payload)
 	if err != nil {
+		n.Config.Logger.Warn("来自 %s 的解密错误: %v", peerID[:8], err)
+		if n.metrics != nil {
+			n.metrics.IncErrorsTotal()
+		}
 		return
 	}
 
@@ -1039,24 +713,20 @@ func (n *Node) processData(remoteAddr net.Addr, payload []byte) {
 	if onReceive != nil {
 		onReceive(peerID, plaintext)
 	} else {
-		fmt.Println("onReceive callback is nil")
+		n.Config.Logger.Warn("onReceive 回调为空")
 	}
 }
 
 // sendRaw 发送原始包（用于握手）
 func (n *Node) sendRaw(conn net.Conn, addr net.Addr, transport string, packet []byte) {
 	if transport == "tcp" && conn != nil {
-		length := uint16(len(packet))
-		frame := make([]byte, 2+len(packet))
-		frame[0] = byte(length >> 8)
-		frame[1] = byte(length)
-		copy(frame[2:], packet)
+		frame := EncodeTCPFrame(packet)
 		if _, err := conn.Write(frame); err != nil {
-			// TCP 发送失败，可能连接已断开
+			n.Config.Logger.Error("TCP write error: %v", err)
 		}
 	} else if udpAddr, ok := addr.(*net.UDPAddr); ok {
 		if _, err := n.conn.WriteToUDP(packet, udpAddr); err != nil {
-			// UDP 发送失败
+			n.Config.Logger.Error("UDP write error: %v", err)
 		}
 	}
 }
@@ -1068,7 +738,7 @@ func (n *Node) GetPeerTransport(peerID string) string {
 		return ""
 	}
 	if p.Transport == "" {
-		return "udp" // 默认
+		return "udp"
 	}
 	return p.Transport
 }
@@ -1085,166 +755,72 @@ func (n *Node) GetPeerLinkMode(peerID string) string {
 	return p.LinkMode
 }
 
-// heartbeatLoop 心跳循环，定期向所有节点发送心跳并检测超时
-func (n *Node) heartbeatLoop() {
-	defer n.wg.Done()
-
-	ticker := time.NewTicker(n.Config.HeartbeatInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-n.closing:
-			return
-		case <-ticker.C:
-			n.sendHeartbeats()
-			n.checkHeartbeatTimeouts()
-		}
+// GetMetrics 获取节点指标快照
+func (n *Node) GetMetrics() metrics.Snapshot {
+	if n.metrics == nil {
+		return metrics.Snapshot{}
 	}
+	n.metrics.SetConnectionsActive(int64(n.Peers.Count()))
+	return n.metrics.GetSnapshot()
 }
 
-// sendHeartbeats 向所有已连接节点发送心跳
-func (n *Node) sendHeartbeats() {
+// GetNATInfo 获取本机 NAT 信息
+func (n *Node) GetNATInfo() *nat.NATInfo {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.natInfo
+}
+
+// ProbeNAT 通过已连接的节点探测本机 NAT 类型
+func (n *Node) ProbeNAT() (*nat.ProbeResult, error) {
+	if n.natProber == nil {
+		return nil, fmt.Errorf("NAT 探测器未初始化")
+	}
+
 	peerIDs := n.Peers.IDs()
+	if len(peerIDs) == 0 {
+		return nil, fmt.Errorf("没有已连接的节点用于 NAT 探测")
+	}
+
+	var helperAddrs []*net.UDPAddr
 	for _, peerID := range peerIDs {
 		p, ok := n.Peers.Get(peerID)
 		if !ok {
 			continue
 		}
-
-		// 构造心跳包: TENT + 0x06 + 时间戳(8字节)
-		packet := make([]byte, 13)
-		copy(packet[0:4], []byte(MagicBytes))
-		packet[4] = PacketTypeHeartbeat
-		timestamp := time.Now().UnixNano()
-		for i := 0; i < 8; i++ {
-			packet[5+i] = byte(timestamp >> (i * 8))
-		}
-
-		transport, addr, conn := p.GetTransportInfo()
-		n.sendRaw(conn, addr, transport, packet)
-	}
-}
-
-// checkHeartbeatTimeouts 检查心跳超时的节点
-func (n *Node) checkHeartbeatTimeouts() {
-	peerIDs := n.Peers.IDs()
-	now := time.Now()
-
-	for _, peerID := range peerIDs {
-		p, ok := n.Peers.Get(peerID)
-		if !ok {
-			continue
-		}
-
-		lastSeen := p.GetLastSeen()
-
-		if now.Sub(lastSeen) > n.Config.HeartbeatTimeout {
-			// 节点超时，移除并通知
-			fmt.Printf("[心跳] 节点 %s 超时断开\n", peerID[:8])
-			n.removePeer(peerID)
+		_, addr, _ := p.GetTransportInfo()
+		if udpAddr, ok := addr.(*net.UDPAddr); ok {
+			helperAddrs = append(helperAddrs, udpAddr)
 		}
 	}
-}
 
-// removePeer 移除节点并触发回调
-func (n *Node) removePeer(peerID string) {
-	p, ok := n.Peers.Get(peerID)
-	if !ok {
-		return
+	if len(helperAddrs) == 0 {
+		return nil, fmt.Errorf("没有用于 NAT 探测的 UDP 对等节点")
 	}
 
-	// 保存原始地址用于重连
-	originalAddr := p.GetOriginalAddr()
+	result, err := n.natProber.ProbeViaHelper(helperAddrs)
+	if err != nil {
+		return nil, err
+	}
 
-	// 关闭 TCP 连接（如果有）
-	p.Close()
-
-	// 从 addrToPeer 中移除
 	n.mu.Lock()
-	for addr, pid := range n.addrToPeer {
-		if pid == peerID {
-			delete(n.addrToPeer, addr)
-		}
+	n.natInfo = &nat.NATInfo{
+		Type:            result.NATType,
+		PublicAddr:      result.PublicAddr,
+		PortPredictable: result.PortPredictable,
+		PortDelta:       result.PortDelta,
+		LastProbe:       result.ProbeTime,
 	}
 	n.mu.Unlock()
 
-	// 从 PeerStore 中移除
-	n.Peers.Remove(peerID)
-
-	// 触发断开回调
-	n.mu.RLock()
-	callback := n.onPeerDisconnected
-	n.mu.RUnlock()
-	if callback != nil {
-		go callback(peerID)
-	}
-
-	// 尝试重连（在后台进行）
-	if originalAddr != "" {
-		go func(addr string) {
-			// 等待一段时间再尝试重连
-			time.Sleep(5 * time.Second)
-
-			// 检查节点是否仍在运行
-			select {
-			case <-n.closing:
-				return
-			default:
-			}
-
-			// 检查是否已经重新连接
-			for _, pid := range n.Peers.IDs() {
-				if pid == peerID {
-					return // 已重连
-				}
-			}
-
-			fmt.Printf("[重连] 尝试重新连接到 %s\n", addr)
-			if err := n.Connect(addr); err != nil {
-				fmt.Printf("[重连] 连接 %s 失败: %v\n", addr, err)
-			}
-		}(originalAddr)
-	}
+	return result, nil
 }
 
-// processHeartbeat 处理心跳请求，返回心跳响应
-func (n *Node) processHeartbeat(conn net.Conn, remoteAddr net.Addr, transport string) {
-	// 更新节点最后活动时间
-	n.mu.RLock()
-	peerID, ok := n.addrToPeer[remoteAddr.String()]
-	n.mu.RUnlock()
-	if ok {
-		if p, exists := n.Peers.Get(peerID); exists {
-			p.UpdateLastSeen()
-		}
-	}
-
-	// 发送心跳响应: TENT + 0x07 + 时间戳(8字节)
-	packet := make([]byte, 13)
-	copy(packet[0:4], []byte(MagicBytes))
-	packet[4] = PacketTypeHeartbeatAck
-	timestamp := time.Now().UnixNano()
-	for i := 0; i < 8; i++ {
-		packet[5+i] = byte(timestamp >> (i * 8))
-	}
-
-	n.sendRaw(conn, remoteAddr, transport, packet)
-}
-
-// processHeartbeatAck 处理心跳响应
-func (n *Node) processHeartbeatAck(remoteAddr net.Addr) {
-	n.mu.RLock()
-	peerID, ok := n.addrToPeer[remoteAddr.String()]
-	n.mu.RUnlock()
+// GetPeerStats 获取指定节点的统计信息
+func (n *Node) GetPeerStats(peerID string) (peer.PeerStats, bool) {
+	p, ok := n.Peers.Get(peerID)
 	if !ok {
-		return
+		return peer.PeerStats{}, false
 	}
-
-	p, exists := n.Peers.Get(peerID)
-	if !exists {
-		return
-	}
-
-	p.UpdateLastSeen()
+	return p.GetStats(), true
 }

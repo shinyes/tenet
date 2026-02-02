@@ -1,18 +1,21 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/cykyes/tenet/log"
 	"github.com/cykyes/tenet/node"
 )
 
 // Tunnel 是用户使用的主要接口
 type Tunnel struct {
-	node   *node.Node
-	mu     sync.RWMutex
-	closed bool
+	node    *node.Node
+	mu      sync.RWMutex
+	started bool
+	closed  bool
 }
 
 // NewTunnel 创建隧道实例
@@ -44,8 +47,15 @@ func (t *Tunnel) Start() error {
 	if t.closed {
 		return fmt.Errorf("隧道已关闭")
 	}
+	if t.started {
+		return fmt.Errorf("隧道已启动")
+	}
 
-	return t.node.Start()
+	if err := t.node.Start(); err != nil {
+		return err
+	}
+	t.started = true
+	return nil
 }
 
 // Stop 停止服务
@@ -53,7 +63,12 @@ func (t *Tunnel) Stop() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	if !t.started {
+		return fmt.Errorf("隧道未启动")
+	}
+
 	t.closed = true
+	t.started = false
 	return t.node.Stop()
 }
 
@@ -123,6 +138,37 @@ func (t *Tunnel) PeerLinkMode(peerID string) string {
 	return t.node.GetPeerLinkMode(peerID)
 }
 
+// GetMetrics 获取节点指标快照
+func (t *Tunnel) GetMetrics() interface{} {
+	return t.node.GetMetrics()
+}
+
+// ProbeNAT 探测本机 NAT 类型（需要至少一个已连接的节点）
+func (t *Tunnel) ProbeNAT() (string, error) {
+	result, err := t.node.ProbeNAT()
+	if err != nil {
+		return "", err
+	}
+	return result.NATType.String(), nil
+}
+
+// GetNATType 获取已探测的 NAT 类型
+func (t *Tunnel) GetNATType() string {
+	info := t.node.GetNATInfo()
+	if info == nil {
+		return "Unknown"
+	}
+	return info.Type.String()
+}
+
+// GracefulStop 优雅关闭隧道
+func (t *Tunnel) GracefulStop() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.closed = true
+	return t.node.GracefulStop(context.Background())
+}
+
 // --- 配置选项 ---
 
 type tunnelConfig struct {
@@ -178,5 +224,31 @@ func WithRelayNodes(addrs []string) Option {
 func WithDialTimeout(timeout time.Duration) Option {
 	return func(c *tunnelConfig) {
 		c.nodeOpts = append(c.nodeOpts, node.WithDialTimeout(timeout))
+	}
+}
+
+// WithLogger 设置日志记录器
+// 默认为静默模式（NopLogger），不输出任何日志
+// 可使用 log.NewStdLogger() 启用控制台日志输出
+func WithLogger(logger log.Logger) Option {
+	return func(c *tunnelConfig) {
+		c.nodeOpts = append(c.nodeOpts, node.WithLogger(logger))
+	}
+}
+
+// WithEnableRelayAuth 设置是否启用中继认证
+// 默认启用，可防止未授权节点滥用中继服务
+func WithEnableRelayAuth(enable bool) Option {
+	return func(c *tunnelConfig) {
+		c.nodeOpts = append(c.nodeOpts, node.WithEnableRelayAuth(enable))
+	}
+}
+
+// WithIdentityPath 设置身份文件路径
+// 如果路径非空，节点启动时会从该路径加载身份，若不存在则创建并保存
+// 这允许节点在重启后保持相同的 ID
+func WithIdentityPath(path string) Option {
+	return func(c *tunnelConfig) {
+		c.nodeOpts = append(c.nodeOpts, node.WithIdentityPath(path))
 	}
 }
