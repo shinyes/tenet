@@ -65,9 +65,15 @@ func (sm *SessionManager) All() map[string]*Session {
 	return result
 }
 
-// Clear 清空所有会话
+// Clear 清空所有会话，安全清除密钥材料
 func (sm *SessionManager) Clear() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+	// 安全关闭所有会话，清除密钥材料
+	for _, session := range sm.sessions {
+		if session != nil {
+			session.Close()
+		}
+	}
 	sm.sessions = make(map[string]*Session)
 }

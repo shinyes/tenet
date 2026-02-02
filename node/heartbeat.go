@@ -77,6 +77,11 @@ func (n *Node) removePeer(peerID string) {
 		return
 	}
 
+	// 更新断开统计
+	if n.metrics != nil {
+		n.metrics.IncDisconnectsTotal()
+	}
+
 	// 保存原始地址用于重连
 	originalAddr := p.GetOriginalAddr()
 

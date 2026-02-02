@@ -8,19 +8,19 @@ import (
 	"github.com/cykyes/tenet/nat"
 )
 
-// 中继认证器（延迟初始化）
-var relayAuthenticator *nat.RelayAuthenticator
-
 // getRelayAuthenticator 获取或创建中继认证器
+// 每个 Node 实例使用自己的认证器，避免全局状态问题
 func (n *Node) getRelayAuthenticator() *nat.RelayAuthenticator {
-	if relayAuthenticator == nil {
-		relayAuthenticator = nat.NewRelayAuthenticator(&nat.RelayAuthConfig{
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.relayAuth == nil {
+		n.relayAuth = nat.NewRelayAuthenticator(&nat.RelayAuthConfig{
 			Enabled:         n.Config.EnableRelayAuth,
 			TokenTTL:        n.Config.RelayAuthTTL,
 			NetworkPassword: n.Config.NetworkPassword,
 		})
 	}
-	return relayAuthenticator
+	return n.relayAuth
 }
 
 // connectViaRelay 使用中继发送握手包

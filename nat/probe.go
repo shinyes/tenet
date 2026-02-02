@@ -74,6 +74,10 @@ type NATProber struct {
 
 	// 请求ID计数器
 	nextRequestID uint32
+
+	// 关闭信号
+	closing chan struct{}
+	closed  bool
 }
 
 // pendingProbe 待处理的探测
@@ -102,6 +106,7 @@ func NewNATProber(conn *net.UDPConn) *NATProber {
 		probeRequests: make(map[uint32]*probeRequestState),
 		timeout:       5 * time.Second,
 		nextRequestID: 1,
+		closing:       make(chan struct{}),
 	}
 
 	// 启动定期清理协程，防止内存泄漏
@@ -115,9 +120,25 @@ func (p *NATProber) cleanupLoop() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		p.cleanupStaleProbes()
+	for {
+		select {
+		case <-p.closing:
+			return
+		case <-ticker.C:
+			p.cleanupStaleProbes()
+		}
 	}
+}
+
+// Close 关闭 NAT 探测器，停止清理协程
+func (p *NATProber) Close() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return
+	}
+	p.closed = true
+	close(p.closing)
 }
 
 // cleanupStaleProbes 清理过期的探测请求

@@ -79,6 +79,11 @@ func (p *Peer) UpgradeTransport(addr net.Addr, conn net.Conn, transport string, 
 		p.Conn.Close()
 	}
 
+	// 安全关闭旧的 Session，清除密钥材料
+	if p.Session != nil && p.Session != session {
+		p.Session.Close()
+	}
+
 	p.Addr = addr
 	p.Conn = conn
 	p.Transport = transport

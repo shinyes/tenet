@@ -64,9 +64,10 @@ type Node struct {
 	relayPendingTarget map[string]*net.UDPAddr // relayAddr -> targetAddr
 	relayInbound       map[string]bool
 
-	metrics   *metrics.Collector // 指标收集器
-	natProber *nat.NATProber     // NAT 探测器
-	natInfo   *nat.NATInfo       // 本机 NAT 信息
+	metrics   *metrics.Collector      // 指标收集器
+	natProber *nat.NATProber          // NAT 探测器
+	natInfo   *nat.NATInfo            // 本机 NAT 信息
+	relayAuth *nat.RelayAuthenticator // 中继认证器（每个 Node 实例独立）
 }
 
 // NewNode 创建一个新的 Node 实例
@@ -228,6 +229,11 @@ func (n *Node) GracefulStop(ctx context.Context) error {
 		n.tcpListener.Close()
 	}
 
+	// 关闭 NAT 探测器，停止清理协程
+	if n.natProber != nil {
+		n.natProber.Close()
+	}
+
 	// 关闭所有对端连接
 	for _, peerID := range peerIDs {
 		if p, ok := n.Peers.Get(peerID); ok {
@@ -327,10 +333,14 @@ func (n *Node) Connect(addrStr string) error {
 
 	// 使用可取消的 context，在节点关闭时取消打洞
 	punchCtx, punchCancel := context.WithCancel(context.Background())
+	defer punchCancel() // 确保在函数返回时取消 context
+
 	go func() {
 		select {
 		case <-n.closing:
 			punchCancel()
+		case <-punchCtx.Done():
+			// context 已取消，退出
 		case <-time.After(15 * time.Second):
 			punchCancel()
 		}
@@ -355,6 +365,8 @@ func (n *Node) Connect(addrStr string) error {
 		timeout := time.After(2 * time.Second)
 		for {
 			select {
+			case <-punchCtx.Done():
+				return
 			case <-timeout:
 				resultChan <- ConnectResult{Transport: "udp"}
 				return
@@ -389,7 +401,11 @@ func (n *Node) Connect(addrStr string) error {
 			if n.Config.EnableRelay {
 				addrKey := rUDPAddr.String()
 				go func() {
-					time.Sleep(n.Config.DialTimeout)
+					select {
+					case <-n.closing:
+						return
+					case <-time.After(n.Config.DialTimeout):
+					}
 					n.mu.RLock()
 					_, ok := n.addrToPeer[addrKey]
 					n.mu.RUnlock()
@@ -402,6 +418,16 @@ func (n *Node) Connect(addrStr string) error {
 				timeout := time.After(10 * time.Second)
 				for {
 					select {
+					case <-n.closing:
+						// 节点关闭，清理资源
+						select {
+						case res2 := <-resultChan:
+							if res2.Conn != nil {
+								res2.Conn.Close()
+							}
+						default:
+						}
+						return
 					case res2 := <-resultChan:
 						if res2.Transport == "tcp" && res2.Conn != nil {
 							length := uint16(len(packetTCP))
@@ -478,6 +504,12 @@ func (n *Node) Send(peerID string, data []byte) error {
 	copy(packet[0:4], []byte("TENT"))
 	packet[4] = PacketTypeData
 	copy(packet[5:], encrypted)
+
+	// 更新流量统计
+	p.AddBytesSent(int64(len(data)))
+	if n.metrics != nil {
+		n.metrics.AddBytesSent(int64(len(data)))
+	}
 
 	transport, addr, conn := p.GetTransportInfo()
 
@@ -713,6 +745,12 @@ func (n *Node) processData(remoteAddr net.Addr, payload []byte) {
 			n.metrics.IncErrorsTotal()
 		}
 		return
+	}
+
+	// 更新接收流量统计
+	p.AddBytesReceived(int64(len(plaintext)))
+	if n.metrics != nil {
+		n.metrics.AddBytesReceived(int64(len(plaintext)))
 	}
 
 	n.mu.RLock()

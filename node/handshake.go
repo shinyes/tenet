@@ -47,6 +47,9 @@ func (n *Node) processHandshake(conn net.Conn, remoteAddr net.Addr, transport st
 		}
 
 		n.Config.Logger.Warn("来自 %s 的握手错误: %v", addrStr, err)
+		if n.metrics != nil {
+			n.metrics.IncHandshakesFailed()
+		}
 		n.mu.Lock()
 		delete(n.pendingHandshakes, stateKey)
 		n.mu.Unlock()
@@ -109,6 +112,12 @@ func (n *Node) processHandshake(conn net.Conn, remoteAddr net.Addr, transport st
 			LastSeen:     time.Now(),
 		}
 		n.Peers.Add(p)
+
+		// 更新握手统计
+		if n.metrics != nil {
+			n.metrics.IncHandshakesTotal()
+			n.metrics.IncConnectionsTotal()
+		}
 
 		n.mu.Lock()
 		n.addrToPeer[addrStr] = peerID
