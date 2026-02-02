@@ -548,8 +548,8 @@ func (n *Node) handleTCP(conn net.Conn) {
 
 	// 使用缓冲池
 	header := make([]byte, 2)
-	frameBuf := GetTCPFrameBuffer()
-	defer PutTCPFrameBuffer(frameBuf)
+	frameBuf := GetLargeBuffer()
+	defer PutLargeBuffer(frameBuf)
 
 	for {
 		_, err := io.ReadFull(conn, header)
@@ -559,12 +559,20 @@ func (n *Node) handleTCP(conn net.Conn) {
 			}
 			return
 		}
+
 		length := uint16(header[0])<<8 | uint16(header[1])
-		if length == 0 || length > TCPFrameSize {
+		if length == 0 {
 			return
 		}
 
-		buf := (*frameBuf)[:length]
+		// 动态分配缓冲区（如果超过预分配大小）
+		var buf []byte
+		if int(length) <= len(*frameBuf) {
+			buf = (*frameBuf)[:length]
+		} else {
+			buf = make([]byte, length)
+		}
+
 		_, err = io.ReadFull(conn, buf)
 		if err != nil {
 			return
@@ -606,8 +614,8 @@ func (n *Node) handleRead() {
 	defer n.wg.Done()
 
 	// 使用缓冲池
-	bufPtr := GetUDPBuffer()
-	defer PutUDPBuffer(bufPtr)
+	bufPtr := GetLargeBuffer()
+	defer PutLargeBuffer(bufPtr)
 	buf := *bufPtr
 
 	for {

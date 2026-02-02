@@ -122,13 +122,21 @@ func (p *Peer) GetOriginalAddr() string {
 	return p.OriginalAddr
 }
 
-// Close 关闭连接
+// Close 关闭连接并安全清理会话密钥
 func (p *Peer) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.State = StateDisconnected
+
+	// 安全关闭加密会话，清除密钥材料
+	if p.Session != nil {
+		p.Session.Close()
+		p.Session = nil
+	}
+
 	if p.Conn != nil && p.Transport == "tcp" {
 		p.Conn.Close()
+		p.Conn = nil
 	}
 }
 

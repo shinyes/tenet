@@ -5,7 +5,23 @@ import (
 	"net"
 
 	"github.com/cykyes/tenet/crypto"
+	"github.com/cykyes/tenet/nat"
 )
+
+// 中继认证器（延迟初始化）
+var relayAuthenticator *nat.RelayAuthenticator
+
+// getRelayAuthenticator 获取或创建中继认证器
+func (n *Node) getRelayAuthenticator() *nat.RelayAuthenticator {
+	if relayAuthenticator == nil {
+		relayAuthenticator = nat.NewRelayAuthenticator(&nat.RelayAuthConfig{
+			Enabled:         n.Config.EnableRelayAuth,
+			TokenTTL:        n.Config.RelayAuthTTL,
+			NetworkPassword: n.Config.NetworkPassword,
+		})
+	}
+	return relayAuthenticator
+}
 
 // connectViaRelay 使用中继发送握手包
 func (n *Node) connectViaRelay(targetAddrStr string) error {
@@ -70,6 +86,7 @@ func (n *Node) registerRelayCandidate(peerID string, remoteAddr net.Addr) {
 }
 
 // buildRelayPacket 构造中继封装包
+// 格式: [Mode(1)] [AddrLen(1)] [Addr] [AuthTokenLen(1)] [AuthToken(可选)] [Inner]
 func (n *Node) buildRelayPacket(mode byte, targetAddr *net.UDPAddr, inner []byte) ([]byte, error) {
 	if targetAddr == nil {
 		return nil, fmt.Errorf("目标地址为空")
@@ -78,11 +95,34 @@ func (n *Node) buildRelayPacket(mode byte, targetAddr *net.UDPAddr, inner []byte
 	if len(addrStr) > 255 {
 		return nil, fmt.Errorf("目标地址过长")
 	}
-	payload := make([]byte, 2+len(addrStr)+len(inner))
+
+	// 生成认证令牌（如果启用）
+	var authTokenData []byte
+	if n.Config.EnableRelayAuth {
+		auth := n.getRelayAuthenticator()
+		token := auth.GenerateTokenWithHMAC(n.Identity.ID, [16]byte{}) // 目标ID未知时使用空
+		if token != nil {
+			authTokenData = token.Encode()
+		}
+	}
+
+	// 确保认证数据不超过 255 字节
+	if len(authTokenData) > 255 {
+		authTokenData = authTokenData[:255]
+	}
+
+	payloadLen := 2 + len(addrStr) + 1 + len(authTokenData) + len(inner)
+	payload := make([]byte, payloadLen)
 	payload[0] = mode
 	payload[1] = byte(len(addrStr))
-	copy(payload[2:], []byte(addrStr))
-	copy(payload[2+len(addrStr):], inner)
+	offset := 2
+	copy(payload[offset:], []byte(addrStr))
+	offset += len(addrStr)
+	payload[offset] = byte(len(authTokenData))
+	offset++
+	copy(payload[offset:], authTokenData)
+	offset += len(authTokenData)
+	copy(payload[offset:], inner)
 
 	packet := make([]byte, 5+len(payload))
 	copy(packet[0:4], []byte("TENT"))
@@ -92,23 +132,57 @@ func (n *Node) buildRelayPacket(mode byte, targetAddr *net.UDPAddr, inner []byte
 }
 
 // handleRelayPacket 处理中继封装包
+// 格式: [Mode(1)] [AddrLen(1)] [Addr] [AuthTokenLen(1)] [AuthToken(可选)] [Inner]
 func (n *Node) handleRelayPacket(origin *net.UDPAddr, payload []byte) {
 	if !n.Config.EnableRelay {
 		return
 	}
-	if origin == nil || len(payload) < 2 {
+	if origin == nil || len(payload) < 3 {
 		return
 	}
+
 	mode := payload[0]
 	addrLen := int(payload[1])
-	if len(payload) < 2+addrLen {
+	if len(payload) < 2+addrLen+1 {
 		return
 	}
 	addrStr := string(payload[2 : 2+addrLen])
-	inner := payload[2+addrLen:]
+	offset := 2 + addrLen
+
+	// 解析认证令牌
+	authTokenLen := int(payload[offset])
+	offset++
+	if len(payload) < offset+authTokenLen {
+		return
+	}
+	authTokenData := payload[offset : offset+authTokenLen]
+	offset += authTokenLen
+
+	inner := payload[offset:]
 	if len(inner) == 0 {
 		return
 	}
+
+	// 验证认证令牌（如果启用）
+	if n.Config.EnableRelayAuth && authTokenLen > 0 {
+		auth := n.getRelayAuthenticator()
+		token, err := nat.DecodeToken(authTokenData)
+		if err != nil {
+			n.Config.Logger.Debug("中继认证令牌解码失败: %v", err)
+			if n.metrics != nil {
+				n.metrics.IncRelayAuthFailed()
+			}
+			return
+		}
+		if err := auth.VerifyToken(token, nil); err != nil {
+			n.Config.Logger.Debug("中继认证失败: %v", err)
+			if n.metrics != nil {
+				n.metrics.IncRelayAuthFailed()
+			}
+			return
+		}
+	}
+
 	targetAddr, err := net.ResolveUDPAddr("udp", addrStr)
 	if err != nil {
 		return

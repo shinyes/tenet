@@ -4,8 +4,10 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/subtle"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/flynn/noise"
 )
@@ -16,11 +18,19 @@ var NoiseConfig = noise.Config{
 	Pattern:     noise.HandshakeXX, // XX模式：双方都需要验证身份
 }
 
+// secureZero 安全地将字节切片清零，防止敏感数据残留在内存中
+// 使用 subtle.ConstantTimeCopy 确保操作不会被编译器优化掉
+func secureZero(b []byte) {
+	zeros := make([]byte, len(b))
+	subtle.ConstantTimeCopy(1, b, zeros)
+}
+
 // HandshakeState 握手状态
 type HandshakeState struct {
 	hs          *noise.HandshakeState
 	isInitiator bool
 	completed   bool
+	createdAt   int64 // Unix 时间戳（秒），用于超时清理
 	mu          sync.Mutex
 }
 
@@ -58,6 +68,7 @@ func NewInitiatorHandshake(localPrivateKey, localPublicKey []byte, networkSecret
 	return &HandshakeState{
 		hs:          hs,
 		isInitiator: true,
+		createdAt:   time.Now().Unix(),
 	}, msg1, nil
 }
 
@@ -87,7 +98,13 @@ func NewResponderHandshake(localPrivateKey, localPublicKey []byte, networkSecret
 	return &HandshakeState{
 		hs:          hs,
 		isInitiator: false,
+		createdAt:   time.Now().Unix(),
 	}, nil
+}
+
+// CreatedAt 返回握手状态创建时间（Unix 秒）
+func (h *HandshakeState) CreatedAt() int64 {
+	return h.createdAt
 }
 
 // ProcessMessage 处理握手消息
@@ -240,6 +257,30 @@ func (s *Session) RemotePublicKey() []byte {
 // HandshakeHash 获取握手哈希（用于通道绑定）
 func (s *Session) HandshakeHash() []byte {
 	return s.handshakeHash
+}
+
+// Close 安全关闭会话，清除敏感密钥材料
+// 调用后会话不可再使用
+func (s *Session) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// 清除远程公钥
+	if s.remoteStaticKey != nil {
+		secureZero(s.remoteStaticKey)
+		s.remoteStaticKey = nil
+	}
+
+	// 清除握手哈希
+	if s.handshakeHash != nil {
+		secureZero(s.handshakeHash)
+		s.handshakeHash = nil
+	}
+
+	// 注意：noise.CipherState 内部的密钥无法直接访问清除
+	// 将引用置空以便 GC 回收
+	s.sendCipher = nil
+	s.recvCipher = nil
 }
 
 // AESGCMCipher 备用的纯AES-GCM加密（不使用Noise时）

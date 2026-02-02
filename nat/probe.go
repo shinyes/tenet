@@ -96,12 +96,50 @@ type probeRequestState struct {
 
 // NewNATProber 创建 NAT 探测器
 func NewNATProber(conn *net.UDPConn) *NATProber {
-	return &NATProber{
+	prober := &NATProber{
 		conn:          conn,
 		pendingProbes: make(map[uint32]*pendingProbe),
 		probeRequests: make(map[uint32]*probeRequestState),
 		timeout:       5 * time.Second,
 		nextRequestID: 1,
+	}
+
+	// 启动定期清理协程，防止内存泄漏
+	go prober.cleanupLoop()
+
+	return prober
+}
+
+// cleanupLoop 定期清理过期的探测状态
+func (p *NATProber) cleanupLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		p.cleanupStaleProbes()
+	}
+}
+
+// cleanupStaleProbes 清理过期的探测请求
+func (p *NATProber) cleanupStaleProbes() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	now := time.Now()
+	staleTimeout := 60 * time.Second
+
+	// 清理过期的待处理探测
+	for id, probe := range p.pendingProbes {
+		if now.Sub(probe.createTime) > staleTimeout {
+			delete(p.pendingProbes, id)
+		}
+	}
+
+	// 清理过期的探测请求状态
+	for id, req := range p.probeRequests {
+		if now.Sub(req.receivedAt) > staleTimeout {
+			delete(p.probeRequests, id)
+		}
 	}
 }
 

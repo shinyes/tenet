@@ -6,11 +6,9 @@ import (
 
 // 缓冲区大小常量
 const (
-	// UDPBufferSize UDP 读取缓冲区大小 (64KB)
-	UDPBufferSize = 65535
-
-	// TCPFrameSize TCP 帧最大大小 (32KB)
-	TCPFrameSize = 32 * 1024
+	// LargeBufferSize 大缓冲区大小 (64KB)
+	// 用于 UDP 接收和 TCP 帧读取
+	LargeBufferSize = 65535
 
 	// PacketBufferSize 通用数据包缓冲区大小 (MTU 大小)
 	PacketBufferSize = 1500
@@ -18,20 +16,11 @@ const (
 
 // 缓冲池定义
 var (
-	// udpBufferPool UDP 大缓冲池 (65535 bytes)
-	// 用于 handleRead 中的 UDP 接收缓冲
-	udpBufferPool = sync.Pool{
+	// largeBufferPool 大缓冲池 (64KB)
+	// 用于 UDP 接收缓冲和 TCP 帧读取
+	largeBufferPool = sync.Pool{
 		New: func() interface{} {
-			buf := make([]byte, UDPBufferSize)
-			return &buf
-		},
-	}
-
-	// tcpFramePool TCP 帧池 (32KB)
-	// 用于 handleTCP 中的帧读取
-	tcpFramePool = sync.Pool{
-		New: func() interface{} {
-			buf := make([]byte, TCPFrameSize)
+			buf := make([]byte, LargeBufferSize)
 			return &buf
 		},
 	}
@@ -46,34 +35,20 @@ var (
 	}
 )
 
-// GetUDPBuffer 从 UDP 缓冲池获取缓冲区
-// 返回 *[]byte，使用完毕后应调用 PutUDPBuffer 归还
-func GetUDPBuffer() *[]byte {
-	return udpBufferPool.Get().(*[]byte)
+// GetLargeBuffer 从大缓冲池获取缓冲区 (64KB)
+// 用于 UDP 和 TCP 数据读取，使用完毕后应调用 PutLargeBuffer 归还
+func GetLargeBuffer() *[]byte {
+	return largeBufferPool.Get().(*[]byte)
 }
 
-// PutUDPBuffer 归还 UDP 缓冲区到池
-func PutUDPBuffer(buf *[]byte) {
+// PutLargeBuffer 归还大缓冲区到池
+func PutLargeBuffer(buf *[]byte) {
 	if buf == nil {
 		return
 	}
 	// 重置长度但保留容量
 	*buf = (*buf)[:cap(*buf)]
-	udpBufferPool.Put(buf)
-}
-
-// GetTCPFrameBuffer 从 TCP 帧池获取缓冲区
-func GetTCPFrameBuffer() *[]byte {
-	return tcpFramePool.Get().(*[]byte)
-}
-
-// PutTCPFrameBuffer 归还 TCP 帧缓冲区到池
-func PutTCPFrameBuffer(buf *[]byte) {
-	if buf == nil {
-		return
-	}
-	*buf = (*buf)[:cap(*buf)]
-	tcpFramePool.Put(buf)
+	largeBufferPool.Put(buf)
 }
 
 // GetPacketBuffer 从通用包池获取缓冲区
@@ -103,16 +78,12 @@ func NewBuffer(size int) *Buffer {
 	var pool *sync.Pool
 	var buf *[]byte
 
-	switch {
-	case size <= PacketBufferSize:
+	if size <= PacketBufferSize {
 		pool = &packetPool
 		buf = packetPool.Get().(*[]byte)
-	case size <= TCPFrameSize:
-		pool = &tcpFramePool
-		buf = tcpFramePool.Get().(*[]byte)
-	default:
-		pool = &udpBufferPool
-		buf = udpBufferPool.Get().(*[]byte)
+	} else {
+		pool = &largeBufferPool
+		buf = largeBufferPool.Get().(*[]byte)
 	}
 
 	return &Buffer{

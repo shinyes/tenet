@@ -12,6 +12,10 @@ func (n *Node) heartbeatLoop() {
 	ticker := time.NewTicker(n.Config.HeartbeatInterval)
 	defer ticker.Stop()
 
+	// 清理计时器：每分钟清理一次过期的映射，防止内存泄漏
+	cleanupTicker := time.NewTicker(time.Minute)
+	defer cleanupTicker.Stop()
+
 	for {
 		select {
 		case <-n.closing:
@@ -19,6 +23,8 @@ func (n *Node) heartbeatLoop() {
 		case <-ticker.C:
 			n.sendHeartbeats()
 			n.checkHeartbeatTimeouts()
+		case <-cleanupTicker.C:
+			n.cleanupStaleMappings()
 		}
 	}
 }
@@ -148,6 +154,62 @@ func (n *Node) processHeartbeat(conn net.Conn, remoteAddr net.Addr, transport st
 	PutTimestamp(packet[5:], time.Now().UnixNano())
 
 	n.sendRaw(conn, remoteAddr, transport, packet)
+}
+
+// cleanupStaleMappings 清理过期的内部映射，防止内存泄漏
+func (n *Node) cleanupStaleMappings() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	now := time.Now().Unix()
+	handshakeTimeout := int64(60) // 握手状态超时时间（秒）
+
+	// 清理不再有效的 addrToPeer 映射
+	for addr, peerID := range n.addrToPeer {
+		if _, exists := n.Peers.Get(peerID); !exists {
+			delete(n.addrToPeer, addr)
+		}
+	}
+
+	// 清理过期的 pendingHandshakes（超过 60 秒未完成的握手）
+	for key, hs := range n.pendingHandshakes {
+		if now-hs.CreatedAt() > handshakeTimeout {
+			delete(n.pendingHandshakes, key)
+			n.Config.Logger.Debug("清理过期握手状态: %s", key)
+		}
+	}
+
+	// 清理 relayForward 映射（保留最近活跃的）
+	// 只保留对应 peer 仍然存在的映射
+	for targetAddr := range n.relayForward {
+		found := false
+		for _, peerID := range n.Peers.IDs() {
+			if p, ok := n.Peers.Get(peerID); ok {
+				_, addr, _ := p.GetTransportInfo()
+				if addr != nil && addr.String() == targetAddr {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			delete(n.relayForward, targetAddr)
+		}
+	}
+
+	// 清理 relayInbound 映射
+	for addr := range n.relayInbound {
+		if _, exists := n.addrToPeer[addr]; !exists {
+			delete(n.relayInbound, addr)
+		}
+	}
+
+	// 清理 relayPendingTarget 映射
+	for addr := range n.relayPendingTarget {
+		if _, exists := n.addrToPeer[addr]; !exists {
+			delete(n.relayPendingTarget, addr)
+		}
+	}
 }
 
 // processHeartbeatAck 处理心跳响应
