@@ -1,19 +1,18 @@
-# Tenet (P2P Tunnel Library)
+# Tenet - P2P 加密隧道库
 
-一个去中心化 P2P 加密隧道库，支持 NAT 打洞、Noise 协议加密和自动中继选择。专为嵌入到分布式应用设计，支持 Windows、Linux 和 Android 平台。
+一个去中心化 P2P 加密隧道库，可作为插件内嵌到其他 Go 程序中，帮助不同程序实例之间建立去中心化加密网络。支持 Windows、Linux 和 Android 平台。
 
 ## 特性
 
 - 🔒 **端到端加密**：使用 Noise Protocol 框架（与 WireGuard 相同）
+- 🔑 **密码组网**：相同密码的节点自动组成私有网络（密码必须配置）
 - 🕳️ **NAT 穿透**：支持 TCP (Simultaneous Open) 与 UDP 并行打洞，智能选择最佳链路
+- ⚡ **TCP 优先**：UDP 快速握手后自动升级至抗 QoS 的 TCP 通道
+- 🔄 **自动中继**：打洞失败时自动选择延迟最低的节点进行中继传输
+- 🌐 **节点发现**：新节点连接后自动介绍给网络中的其他节点
 - 🔍 **NAT 类型探测**：无需外部 STUN 服务器，通过已连接节点探测 NAT 类型
-- ⚡ **无缝升级**：UDP 快速握手，后台自动升级至抗 QoS 的 TCP 通道
-- 🔄 **自动中继**：打洞失败时自动在可用节点中回退到中继
-- 🌐 **节点发现**：连接的节点会互相介绍其他节点
-- 🔑 **密码组网**：相同密码的节点自动组成私有网络
-- 💓 **心跳保活**：定期心跳检测连接状态，超时自动断开
-- 🔃 **断线重连**：节点断开后自动尝试重新连接
-- 🛡️ **安全防护**：中继认证防滥用
+- 💓 **心跳保活**：定期心跳检测连接状态，超时自动断开并重连
+- 🛡️ **中继认证**：中继转发需要认证，防止滥用
 - 📊 **指标监控**：内置连接、流量、打洞成功率等统计
 - 🌍 **跨平台**：支持 Windows、Linux、macOS、Android
 
@@ -42,13 +41,16 @@ import (
 )
 
 func main() {
-    // 1. 创建节点（可选：启用日志）
-    node, _ := api.NewTunnel(
-        api.WithPassword("my-secret-key"),
-        api.WithListenPort(0), // 0 = 随机端口
-        // 启用日志输出（默认静默，适合嵌入其他应用）
+    // 1. 创建节点（密码必须配置）
+    tunnel, err := api.NewTunnel(
+        api.WithPassword("my-secret-key"), // 必须：相同密码的节点才能互联
+        api.WithListenPort(0),             // 0 = 随机端口
+        // 可选：启用日志输出（默认静默，适合嵌入其他应用）
         api.WithLogger(tlog.NewStdLogger(tlog.WithLevel(tlog.LevelInfo))),
     )
+    if err != nil {
+        log.Fatalf("创建隧道失败: %v", err)
+    }
 
     // 2. 注册回调
     shortID := func(id string) string {
@@ -58,29 +60,31 @@ func main() {
         return id
     }
 
-    node.OnReceive(func(peerID string, data []byte) {
+    tunnel.OnReceive(func(peerID string, data []byte) {
         log.Printf("收到消息 [%s]: %s", shortID(peerID), string(data))
     })
 
-    node.OnPeerConnected(func(peerID string) {
+    tunnel.OnPeerConnected(func(peerID string) {
         log.Printf("新连接: %s", shortID(peerID))
         // 连接成功后发送问候
-        node.Send(peerID, []byte("Hello Tenet!"))
-        
-        // 探测 NAT 类型（可选）
-        if natType, err := node.ProbeNAT(); err == nil {
-            log.Printf("本机 NAT 类型: %s", natType)
-        }
+        tunnel.Send(peerID, []byte("Hello Tenet!"))
     })
 
-    // 3. 启动并连接
-    node.Start()
-    defer node.GracefulStop() // 优雅关闭
+    tunnel.OnPeerDisconnected(func(peerID string) {
+        log.Printf("节点断开: %s", shortID(peerID))
+    })
 
-    fmt.Printf("本地地址: %s\n", node.LocalAddr())
+    // 3. 启动
+    if err := tunnel.Start(); err != nil {
+        log.Fatalf("启动失败: %v", err)
+    }
+    defer tunnel.GracefulStop() // 优雅关闭
+
+    fmt.Printf("本地节点 ID: %s\n", tunnel.LocalID())
+    fmt.Printf("本地监听地址: %s\n", tunnel.LocalAddr())
     
-    // 主动连接其他节点（可选）
-    // node.Connect("1.2.3.4:9000")
+    // 主动连接其他节点（可选，也可等待其他节点来连接）
+    // tunnel.Connect("1.2.3.4:9000")
     
     select {} // 阻塞运行
 }
@@ -95,20 +99,25 @@ func main() {
 go run examples/basic/main.go -l 1231 -secret "mysecret"
 ```
 
-**节点 B**（主动连接，启用详细日志）:
+**节点 B**（主动连接节点 A）:
+```bash
+go run examples/basic/main.go -l 1232 -secret "mysecret" -p "127.0.0.1:1231"
+```
+
+**启用详细日志**（添加 `-v` 参数）:
 ```bash
 go run examples/basic/main.go -l 1232 -secret "mysecret" -p "127.0.0.1:1231" -v
 ```
 
-**使用中继节点**:
+**配置中继节点**:
 ```bash
-# 中继服务器（开启 -relay 提供中继服务）
-go run examples/basic/main.go -l 9000 -secret "mysecret" -relay
+# 中继服务器（开启中继服务供其他节点使用）
+go run examples/basic/main.go -l 9000 -secret "mysecret"
 
-# 普通节点（自动使用可用中继，无需指定 -relay）
-go run examples/basic/main.go -l 1232 -secret "mysecret" -p "1.2.3.4:9000"
+# 普通节点（指定中继节点地址，打洞失败时自动使用）
+go run examples/basic/main.go -l 1232 -secret "mysecret" -relay "1.2.3.4:9000"
 ```
-> 只有开启 `-relay` 的节点才会响应中继转发请求。其他节点在直连失败时会自动通过已连接的中继节点回退。
+> 所有节点默认启用中继功能。当两个节点无法直连时，会自动通过已连接的中继节点进行数据转发，并优先选择延迟最低的节点。
 
 ### 编译示例
 
@@ -121,9 +130,10 @@ go build -o build\basic.exe .\examples\basic
 ```
 > peers
 已连接节点:
-  1. 8cac1d66... [tcp]
+  1. 8cac1d66... [tcp/p2p]
 ```
-`[tcp]` 表示已成功建立 TCP 直连（抗阻塞），`[udp]` 表示使用 UDP 通道。
+- `tcp/udp` 表示传输协议（TCP 抗阻塞，优先使用）
+- `p2p/relay` 表示链路模式（直连或中继）
 
 ## API 参考
 
@@ -132,35 +142,36 @@ go build -o build\basic.exe .\examples\basic
 | 方法 | 说明 |
 |------|------|
 | `NewTunnel(opts...)` | 创建隧道实例 |
-| `Start()` | 启动隧道服务 (UDP & TCP 监听) |
+| `Start()` | 启动隧道服务（UDP & TCP 监听） |
 | `Stop()` | 停止服务 |
 | `GracefulStop()` | 优雅关闭（通知对端后再断开） |
-| `Connect(addr)` | 连接对等节点 (尝试双栈打洞) |
+| `Connect(addr)` | 连接对等节点（同时尝试 TCP/UDP 打洞） |
 | `Send(peerID, data)` | 发送数据 |
 | `OnReceive(handler)` | 设置接收回调 |
 | `OnPeerConnected(handler)` | 节点连接回调 |
 | `OnPeerDisconnected(handler)` | 节点断开回调 |
-| `LocalID()` | 获取本地节点ID |
+| `LocalID()` | 获取本地节点 ID |
+| `LocalAddr()` | 获取本地监听地址 |
 | `Peers()` | 获取已连接节点列表 |
-| `PeerTransport(peerID)` | 获取节点当前的传输协议 |
-| `PeerLinkMode(peerID)` | 获取链路模式 (p2p/relay) |
+| `PeerTransport(peerID)` | 获取传输协议（tcp/udp） |
+| `PeerLinkMode(peerID)` | 获取链路模式（p2p/relay） |
 | `ProbeNAT()` | 探测本机 NAT 类型 |
-| `GetNATType()` | 获取已探测的 NAT 类型 |
 | `GetMetrics()` | 获取指标快照 |
 
 ### 配置选项
 
 | 选项 | 说明 |
 |------|------|
-| `WithPassword(pwd)` | 网络密码 |
-| `WithListenPort(port)` | 监听端口 |
-| `WithEnableHolePunch(bool)` | 启用NAT打洞 |
-| `WithEnableRelay(bool)` | 启用中继服务（作为中继服务器） |
-| `WithMaxPeers(n)` | 最大连接数（超过后拒绝新连接） |
+| `WithPassword(pwd)` | **必须**：网络密码（相同密码的节点才能互联） |
+| `WithListenPort(port)` | 监听端口（0 = 随机分配） |
+| `WithEnableHolePunch(bool)` | 启用 NAT 打洞（默认开启） |
+| `WithEnableRelay(bool)` | 启用中继服务（默认开启） |
+| `WithRelayNodes(addrs)` | 预设中继节点地址列表 |
+| `WithMaxPeers(n)` | 最大连接数（默认 50） |
 | `WithHeartbeatInterval(d)` | 心跳发送间隔（默认 5 秒） |
-| `WithRelayNodes(addrs)` | 预设中继节点种子列表（可选） |
+| `WithHeartbeatTimeout(d)` | 心跳超时时间（默认 30 秒） |
 | `WithLogger(logger)` | 设置日志记录器（默认静默） |
-| `WithEnableRelayAuth(bool)` | 启用中继认证（默认开启） |
+| `WithIdentityPath(path)` | 身份文件路径（持久化节点 ID） |
 
 ## 项目结构
 
@@ -178,27 +189,27 @@ go build -o build\basic.exe .\examples\basic
 
 ## 工作原理
 
-1.  **启动**: 监听本地 UDP 端口，并利用 `SO_REUSEADDR` 监听同名 TCP 端口。
-2.  **连接**: 手动输入对方地址发起连接。
-3.  **打洞**:
-    *   **UDP**: 发送尝试包，实现快速握手。
-    *   **TCP**: 发起 Simultaneous Open (同时开放) 连接，尝试穿透 NAT。
-4.  **握手**: 使用 Noise Protocol (XX 模式) 进行双向身份验证和密钥交换。
-5.  **升级**:
-    *   系统优先使用 TCP 连接（QoS 友好）。
-    *   如果 UDP 先建立，系统会保持后台 TCP 尝试。
-    *   一旦 TCP 握手成功，无缝将该节点的所有流量升级至 TCP 通道。
-6.  **通信**: 建立加密会话后，通过当前最优通道发送加密数据包。
-7.  **中继**: 打洞失败时，优先从已连接节点中选择可用中继回退。
-8.  **节点发现**: 节点连接成功后自动交换已知节点列表，实现网络自动扩展。
-9.  **心跳保活**: 每 5 秒发送心跳包，30 秒无响应则视为断开。
-10. **断线重连**: 节点断开后 5 秒自动尝试重新连接。
+### 连接流程
 
-### 节点发现协议
+1. **启动**：同时监听 UDP 和 TCP 端口（使用 `SO_REUSEADDR` 共享端口）
+2. **连接**：可主动连接其他节点，也可等待其他节点来连接
+3. **打洞**：
+   - 同时尝试 **UDP 打洞** 和 **TCP Simultaneous Open**
+   - 使用相同端口，最大化穿透成功率
+4. **握手**：使用 Noise Protocol (XX 模式) 进行双向身份验证
+   - 密码作为 Prologue 参与认证，密码不同则握手失败
+5. **传输升级**：
+   - UDP 握手成功后，后台继续尝试 TCP
+   - TCP 握手成功后，自动升级至 TCP 通道（抗 QoS）
+6. **中继回退**：打洞失败时，选择延迟最低的已连接节点进行中继
+7. **节点发现**：新节点连接后自动交换已知节点列表
+8. **心跳保活**：每 5 秒发送心跳，30 秒无响应则断开并尝试重连
 
-当 A↔B 和 C↔B 已连接时：
-1. C 向 B 发送 **DiscoveryRequest (0x04)** 请求已知节点列表
-2. B 返回 **DiscoveryResponse (0x05)** 包含 A 的 PeerID 和地址
+### 节点发现
+
+当 A↔B 和 B↔C 已连接时：
+1. C 向 B 发送 **DiscoveryRequest** 请求已知节点列表
+2. B 返回 **DiscoveryResponse** 包含 A 的 PeerID 和地址
 3. C 自动尝试连接 A，无需手动配置
 
 ```
@@ -207,94 +218,50 @@ go build -o build\basic.exe .\examples\basic
       └─────── 自动发现 ─────────┘
 ```
 
-## 协议常量
+## 平台支持
 
-| 类型 | 值 | 说明 |
-|------|-----|------|
-| `PacketTypeHandshake` | 0x01 | Noise 握手 |
-| `PacketTypeData` | 0x02 | 加密数据 |
-| `PacketTypeRelay` | 0x03 | 中继封装 |
-| `PacketTypeDiscoveryReq` | 0x04 | 节点发现请求 |
-| `PacketTypeDiscoveryResp` | 0x05 | 节点发现响应 |
-| `PacketTypeHeartbeat` | 0x06 | 心跳请求 |
-| `PacketTypeHeartbeatAck` | 0x07 | 心跳响应 |
-
-## 依赖
-
-- [flynn/noise](https://github.com/flynn/noise) - Noise Protocol框架
-- [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) - 加密原语
-
-## 高级功能
-
-### NAT 类型探测
-
-无需外部 STUN 服务器，通过已连接的节点探测本机 NAT 类型：
-
-```go
-// 连接至少一个节点后调用
-natType, err := tunnel.ProbeNAT()
-if err == nil {
-    fmt.Printf("NAT 类型: %s\n", natType) // "Full Cone", "Port Restricted", "Symmetric" 等
-}
-```
-
-**NAT 类型与打洞策略**：
-
-| 本机 NAT | 对端 NAT | 推荐策略 |
-|----------|----------|----------|
-| 公网/全锥 | 公网/全锥 | UDP 直连 |
-| 锥形 | 锥形 | UDP 打洞 |
-| 锥形 | 端口受限 | UDP 打洞 + TCP 备选 |
-| 对称型 | 锥形 | TCP 同时打开 |
-| 对称型 | 对称型 | 端口预测 + 中继回退 |
-
-### 指标监控
-
-获取节点运行指标：
-
-```go
-metrics := tunnel.GetMetrics()
-fmt.Printf("活跃连接: %d\n", metrics.ConnectionsActive)
-fmt.Printf("发送流量: %d bytes\n", metrics.BytesSent)
-fmt.Printf("打洞成功率: %.2f%%\n", metrics.PunchSuccessRate * 100)
-```
-
-### 日志配置
-
-默认静默模式（适合嵌入其他应用）：
-
-```go
-// 默认不输出日志
-tunnel, _ := api.NewTunnel(api.WithPassword("secret"))
-
-// 启用日志
-import "github.com/cykyes/tenet/log"
-
-tunnel, _ := api.NewTunnel(
-    api.WithPassword("secret"),
-    api.WithLogger(log.NewStdLogger(
-        log.WithLevel(log.LevelDebug), // Debug/Info/Warn/Error
-        log.WithPrefix("[myapp]"),
-    )),
-)
-```
+| 平台 | 架构 | 状态 |
+|------|------|:----:|
+| Windows | x64, ARM64 | ✅ |
+| Linux | x64, ARM64 | ✅ |
+| macOS | x64, ARM64 | ✅ |
+| Android | ARM64, ARM | ✅ |
 
 ### 跨平台编译
 
-**Linux x64**:
 ```bash
+# Linux x64
 GOOS=linux GOARCH=amd64 go build -o build/app_linux_amd64 ./examples/basic
-```
 
-**Android ARM64**:
-```bash
+# Android ARM64
 GOOS=android GOARCH=arm64 go build -o build/app_android_arm64 ./examples/basic
-```
 
-**Windows x64**:
-```bash
+# Windows x64
 GOOS=windows GOARCH=amd64 go build -o build/app_windows_amd64.exe ./examples/basic
 ```
 
-## 参考
-- [Easytier](https://github.com/EasyTier/EasyTier) - 去中心化组网
+## 协议格式
+
+| 类型 | 值 | 说明 |
+|------|:---:|------|
+| Handshake | 0x01 | Noise 握手 |
+| Data | 0x02 | 加密数据 |
+| Relay | 0x03 | 中继封装 |
+| DiscoveryReq | 0x04 | 节点发现请求 |
+| DiscoveryResp | 0x05 | 节点发现响应 |
+| Heartbeat | 0x06 | 心跳请求 |
+| HeartbeatAck | 0x07 | 心跳响应 |
+
+## 依赖
+
+- [flynn/noise](https://github.com/flynn/noise) - Noise Protocol 框架
+- [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) - 加密原语
+- [golang.org/x/sys](https://pkg.go.dev/golang.org/x/sys) - 系统调用（Windows SO_REUSEADDR）
+
+## 构建要求
+
+- Go 1.21+
+
+## 许可
+
+MIT License

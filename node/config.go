@@ -72,6 +72,11 @@ func DefaultConfig() *Config {
 func (c *Config) Validate() error {
 	var errs []error
 
+	// 检查网络密码（必须配置）
+	if c.NetworkPassword == "" {
+		errs = append(errs, errors.New("必须配置网络密码 (NetworkPassword)"))
+	}
+
 	// 检查端口范围
 	if c.ListenPort < 0 || c.ListenPort > 65535 {
 		errs = append(errs, errors.New("ListenPort must be between 0 and 65535"))
