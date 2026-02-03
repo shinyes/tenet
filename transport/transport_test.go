@@ -34,7 +34,7 @@ func TestListenConfigRealUse(t *testing.T) {
 	lc := ListenConfig()
 
 	// 使用 ListenConfig 创建真实的监听器
-	listener, err := lc.Listen(nil, "tcp", "127.0.0.1:0")
+	listener, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen 失败: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestListenConfigRealUse(t *testing.T) {
 func TestDialConfigRealUse(t *testing.T) {
 	// 首先创建一个监听器
 	lc := ListenConfig()
-	listener, err := lc.Listen(nil, "tcp", "127.0.0.1:0")
+	listener, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("创建监听器失败: %v", err)
 	}
