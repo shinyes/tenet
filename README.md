@@ -1,6 +1,6 @@
 # Tenet - P2P 加密隧道库
 
-一个去中心化 P2P 加密隧道库，可作为插件内嵌到其他 Go 程序中，帮助不同程序实例之间建立去中心化加密网络。支持 Windows、Linux 和 Android 平台。
+一个去中心化 P2P 加密隧道库，可作为插件内嵌到其他 Go 程序中，帮助不同程序实例之间建立去中心化加密网络。支持 Windows、Linux、macOS 和 Android 平台。
 
 ## 特性
 
@@ -11,9 +11,11 @@
 - 🔄 **自动中继**：打洞失败时自动选择延迟最低的节点进行中继传输
 - 🌐 **节点发现**：新节点连接后自动介绍给网络中的其他节点
 - 🔍 **NAT 类型探测**：无需外部 STUN 服务器，通过已连接节点探测 NAT 类型
-- 💓 **心跳保活**：定期心跳检测连接状态，超时自动断开并重连
-- 🛡️ **中继认证**：中继转发需要认证，防止滥用
-- 📊 **指标监控**：内置连接、流量、打洞成功率等统计
+- 💓 **心跳保活**：定期心跳检测连接状态，超时自动断开
+- 🔁 **自动重连**：断线后自动重连，支持指数退避和回调通知
+- 🛡️ **中继认证**：中继转发需要认证（Ed25519/HMAC），防止滥用
+- 📊 **指标监控**：内置连接、流量、打洞成功率、重连等统计
+- 🚀 **KCP 可靠传输**：可选的 KCP 协议层，提供可靠 UDP 传输
 - 🌍 **跨平台**：支持 Windows、Linux、macOS、Android
 
 ## 快速开始
@@ -172,19 +174,73 @@ go build -o build\basic.exe .\examples\basic
 | `WithHeartbeatTimeout(d)` | 心跳超时时间（默认 30 秒） |
 | `WithLogger(logger)` | 设置日志记录器（默认静默） |
 | `WithIdentityPath(path)` | 身份文件路径（持久化节点 ID） |
+| `WithEnableReconnect(bool)` | 启用自动重连（默认开启） |
+| `WithReconnectMaxRetries(n)` | 最大重连次数（默认 10，0=无限） |
+| `WithReconnectBackoff(init, max, mult)` | 重连退避参数 |
+
+### 重连回调
+
+| 方法 | 说明 |
+|------|------|
+| `OnReconnecting(handler)` | 开始重连尝试时触发 |
+| `OnReconnected(handler)` | 重连成功时触发 |
+| `OnGaveUp(handler)` | 达到最大重试次数放弃时触发 |
+| `GetReconnectingPeers()` | 获取正在重连的节点列表 |
+| `CancelReconnect(peerID)` | 取消指定节点的重连 |
 
 ## 项目结构
 
 ```
-├── api/          # 公共API (Tunnel 接口)
-├── node/         # 核心节点管理 (Node, Config)
-├── nat/          # NAT穿透 (TCP/UDP打洞, NAT探测, 中继)
-├── transport/    # 传输层封装 (跨平台Socket复用)
-├── crypto/       # Noise协议加密
-├── peer/         # 对等节点管理 (Peer, ConnState, PeerStore)
-├── metrics/      # 指标监控 (连接/流量/打洞统计)
-├── log/          # 日志接口 (Logger, NopLogger, StdLogger)
-└── examples/     # 示例代码
+tenet/
+├── api/                  # 公共 API（用户主要使用的接口）
+│   └── tunnel.go         # Tunnel 接口及配置选项
+│
+├── node/                 # 核心节点实现
+│   ├── node.go           # Node 主结构和核心逻辑
+│   ├── config.go         # 配置定义和验证
+│   ├── handshake.go      # 握手处理
+│   ├── heartbeat.go      # 心跳检测与断线处理
+│   ├── discovery.go      # 节点发现协议
+│   ├── reconnect.go      # 自动重连机制（指数退避）
+│   ├── relay_handler.go  # 中继转发处理
+│   ├── kcp.go            # KCP 可靠传输管理器
+│   └── kcp_transport.go  # KCP 传输层集成
+│
+├── crypto/               # 加密模块
+│   ├── identity.go       # 节点身份（Ed25519/Curve25519 密钥）
+│   ├── noise.go          # Noise Protocol (XX 模式)
+│   └── session.go        # 加密会话管理
+│
+├── nat/                  # NAT 穿透模块
+│   ├── holepunch.go      # UDP 打洞
+│   ├── tcp_punch.go      # TCP Simultaneous Open
+│   ├── probe.go          # NAT 类型探测
+│   ├── relay.go          # 中继节点管理与评分
+│   ├── relay_auth.go     # 中继认证（Ed25519/HMAC）
+│   └── nat.go            # NAT 类型定义
+│
+├── peer/                 # 对等节点管理
+│   └── peer.go           # Peer 结构和 PeerStore
+│
+├── transport/            # 传输层抽象
+│   ├── transport.go      # Transport 接口
+│   └── socket*.go        # 跨平台 Socket 配置（SO_REUSEADDR）
+│
+├── metrics/              # 指标监控
+│   └── metrics.go        # 统计收集器（原子操作，线程安全）
+│
+├── log/                  # 日志接口
+│   └── logger.go         # Logger 接口（NopLogger/StdLogger）
+│
+├── internal/             # 内部实现（不对外暴露）
+│   ├── pool/             # 高效缓冲池（sync.Pool）
+│   └── protocol/         # 协议编解码工具
+│
+├── examples/             # 示例代码
+│   └── basic/            # 命令行示例程序
+│
+├── build/                # 构建产物
+└── doc.go                # 包文档
 ```
 
 ## 工作原理
@@ -255,13 +311,23 @@ GOOS=windows GOARCH=amd64 go build -o build/app_windows_amd64.exe ./examples/bas
 ## 依赖
 
 - [flynn/noise](https://github.com/flynn/noise) - Noise Protocol 框架
+- [xtaci/kcp-go](https://github.com/xtaci/kcp-go) - KCP 可靠 UDP 传输
 - [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) - 加密原语
-- [golang.org/x/sys](https://pkg.go.dev/golang.org/x/sys) - 系统调用（Windows SO_REUSEADDR）
+- [golang.org/x/sys](https://pkg.go.dev/golang.org/x/sys) - 系统调用（SO_REUSEADDR）
 
 ## 构建要求
 
-- Go 1.21+
+- Go 1.25
 
-## 许可
+## 开发
 
-MIT License
+```bash
+# 运行所有测试
+go test ./... -v
+
+# 测试覆盖率
+go test ./... -cover
+
+# 构建示例
+go build -o build/basic ./examples/basic
+```

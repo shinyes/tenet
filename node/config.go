@@ -48,6 +48,18 @@ type Config struct {
 
 	// 身份文件路径，为空则每次生成新身份
 	IdentityPath string
+
+	// 是否启用 KCP 可靠 UDP 传输
+	EnableKCP bool
+
+	// KCP 配置（nil 则使用默认平衡模式）
+	KCPConfig *KCPConfig
+
+	// 是否启用自动重连
+	EnableReconnect bool
+
+	// 重连配置（nil 则使用默认配置）
+	ReconnectConfig *ReconnectConfig
 }
 
 // DefaultConfig 返回默认配置
@@ -65,6 +77,10 @@ func DefaultConfig() *Config {
 		Logger:            log.Nop(),
 		EnableRelayAuth:   true,
 		RelayAuthTTL:      5 * time.Minute,
+		EnableKCP:         true, // 默认启用 KCP 可靠传输
+		KCPConfig:         nil,  // 使用默认平衡模式
+		EnableReconnect:   true, // 默认启用自动重连
+		ReconnectConfig:   nil,  // 使用默认重连配置
 	}
 }
 
@@ -220,5 +236,55 @@ func WithRelayAuthTTL(ttl time.Duration) Option {
 func WithIdentityPath(path string) Option {
 	return func(c *Config) {
 		c.IdentityPath = path
+	}
+}
+
+// WithEnableKCP 设置是否启用 KCP 可靠 UDP 传输
+func WithEnableKCP(enable bool) Option {
+	return func(c *Config) {
+		c.EnableKCP = enable
+	}
+}
+
+// WithKCPConfig 设置 KCP 配置
+func WithKCPConfig(cfg *KCPConfig) Option {
+	return func(c *Config) {
+		c.KCPConfig = cfg
+	}
+}
+
+// WithEnableReconnect 设置是否启用自动重连
+func WithEnableReconnect(enable bool) Option {
+	return func(c *Config) {
+		c.EnableReconnect = enable
+	}
+}
+
+// WithReconnectConfig 设置重连配置
+func WithReconnectConfig(cfg *ReconnectConfig) Option {
+	return func(c *Config) {
+		c.ReconnectConfig = cfg
+	}
+}
+
+// WithReconnectMaxRetries 设置最大重连次数（0 表示无限重试）
+func WithReconnectMaxRetries(maxRetries int) Option {
+	return func(c *Config) {
+		if c.ReconnectConfig == nil {
+			c.ReconnectConfig = DefaultReconnectConfig()
+		}
+		c.ReconnectConfig.MaxRetries = maxRetries
+	}
+}
+
+// WithReconnectBackoff 设置重连退避参数
+func WithReconnectBackoff(initialDelay, maxDelay time.Duration, multiplier float64) Option {
+	return func(c *Config) {
+		if c.ReconnectConfig == nil {
+			c.ReconnectConfig = DefaultReconnectConfig()
+		}
+		c.ReconnectConfig.InitialDelay = initialDelay
+		c.ReconnectConfig.MaxDelay = maxDelay
+		c.ReconnectConfig.BackoffMultiplier = multiplier
 	}
 }

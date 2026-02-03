@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cykyes/tenet/crypto"
+	"github.com/cykyes/tenet/internal/protocol"
 	"github.com/cykyes/tenet/peer"
 )
 
@@ -58,7 +59,7 @@ func (n *Node) processHandshake(conn net.Conn, remoteAddr net.Addr, transport st
 
 	// 3. 发送响应（不需要锁）
 	if response != nil {
-		packet := BuildHandshakePacket(response)
+		packet := protocol.BuildHandshakePacket(response)
 		n.sendRaw(conn, remoteAddr, transport, packet)
 	}
 

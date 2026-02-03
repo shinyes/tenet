@@ -169,6 +169,49 @@ func (t *Tunnel) GracefulStop() error {
 	return t.node.GracefulStop(context.Background())
 }
 
+// --- 重连相关方法 ---
+
+// OnReconnecting 设置重连中回调
+// 当节点开始尝试重连时触发，提供当前尝试次数和下次重试延迟
+func (t *Tunnel) OnReconnecting(handler func(peerID string, attempt int, nextRetryIn time.Duration)) {
+	t.node.OnReconnecting(handler)
+}
+
+// OnReconnected 设置重连成功回调
+// 当节点成功重连时触发，提供总尝试次数
+func (t *Tunnel) OnReconnected(handler func(peerID string, attempts int)) {
+	t.node.OnReconnected(handler)
+}
+
+// OnGaveUp 设置放弃重连回调
+// 当达到最大重试次数后触发，提供总尝试次数和最后一次错误
+func (t *Tunnel) OnGaveUp(handler func(peerID string, attempts int, lastErr error)) {
+	t.node.OnGaveUp(handler)
+}
+
+// GetReconnectingPeers 获取正在重连的节点列表
+func (t *Tunnel) GetReconnectingPeers() []string {
+	infos := t.node.GetAllReconnectInfo()
+	if infos == nil {
+		return nil
+	}
+	result := make([]string, 0, len(infos))
+	for _, info := range infos {
+		result = append(result, info.PeerID)
+	}
+	return result
+}
+
+// CancelReconnect 取消指定节点的重连
+func (t *Tunnel) CancelReconnect(peerID string) {
+	t.node.CancelReconnect(peerID)
+}
+
+// CancelAllReconnects 取消所有重连任务
+func (t *Tunnel) CancelAllReconnects() {
+	t.node.CancelAllReconnects()
+}
+
 // --- 配置选项 ---
 
 type tunnelConfig struct {
@@ -250,5 +293,58 @@ func WithEnableRelayAuth(enable bool) Option {
 func WithIdentityPath(path string) Option {
 	return func(c *tunnelConfig) {
 		c.nodeOpts = append(c.nodeOpts, node.WithIdentityPath(path))
+	}
+}
+
+// WithEnableKCP 设置是否启用 KCP 可靠 UDP 传输
+// 默认启用，使用平衡模式（额外带宽消耗约 5-10%，延迟降低 30%）
+// 禁用后 UDP 传输不保证可靠性
+func WithEnableKCP(enable bool) Option {
+	return func(c *tunnelConfig) {
+		c.nodeOpts = append(c.nodeOpts, node.WithEnableKCP(enable))
+	}
+}
+
+// WithKCPConfig 设置 KCP 配置
+// 可选模式：
+//   - node.DefaultKCPConfig(): 平衡模式（默认）
+//   - 自定义配置以调整延迟/带宽权衡
+func WithKCPConfig(cfg *node.KCPConfig) Option {
+	return func(c *tunnelConfig) {
+		c.nodeOpts = append(c.nodeOpts, node.WithKCPConfig(cfg))
+	}
+}
+
+// WithEnableReconnect 设置是否启用自动重连
+// 默认启用，断开连接后自动尝试重连
+func WithEnableReconnect(enable bool) Option {
+	return func(c *tunnelConfig) {
+		c.nodeOpts = append(c.nodeOpts, node.WithEnableReconnect(enable))
+	}
+}
+
+// WithReconnectConfig 设置重连配置
+// 可自定义重试次数、退避策略等参数
+func WithReconnectConfig(cfg *node.ReconnectConfig) Option {
+	return func(c *tunnelConfig) {
+		c.nodeOpts = append(c.nodeOpts, node.WithReconnectConfig(cfg))
+	}
+}
+
+// WithReconnectMaxRetries 设置最大重连次数
+// 0 表示无限重试，默认为 10 次
+func WithReconnectMaxRetries(maxRetries int) Option {
+	return func(c *tunnelConfig) {
+		c.nodeOpts = append(c.nodeOpts, node.WithReconnectMaxRetries(maxRetries))
+	}
+}
+
+// WithReconnectBackoff 设置重连退避参数
+// initialDelay: 初始延迟（默认 1 秒）
+// maxDelay: 最大延迟（默认 5 分钟）
+// multiplier: 退避乘数（默认 2.0）
+func WithReconnectBackoff(initialDelay, maxDelay time.Duration, multiplier float64) Option {
+	return func(c *tunnelConfig) {
+		c.nodeOpts = append(c.nodeOpts, node.WithReconnectBackoff(initialDelay, maxDelay, multiplier))
 	}
 }

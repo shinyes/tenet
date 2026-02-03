@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/cykyes/tenet/crypto"
+	"github.com/cykyes/tenet/internal/pool"
+	"github.com/cykyes/tenet/internal/protocol"
 	"github.com/cykyes/tenet/metrics"
 	"github.com/cykyes/tenet/nat"
 	"github.com/cykyes/tenet/peer"
@@ -38,7 +40,7 @@ const (
 // Node 表示一个 P2P 节点
 type Node struct {
 	Config   *Config
-	Identity *Identity
+	Identity *crypto.Identity
 	Peers    *peer.PeerStore
 
 	conn        *net.UDPConn
@@ -68,6 +70,17 @@ type Node struct {
 	natProber *nat.NATProber          // NAT 探测器
 	natInfo   *nat.NATInfo            // 本机 NAT 信息
 	relayAuth *nat.RelayAuthenticator // 中继认证器（每个 Node 实例独立）
+
+	// KCP 可靠 UDP 传输层
+	kcpTransport *KCPTransport
+
+	// 重连管理器
+	reconnectManager *ReconnectManager
+
+	// 重连回调
+	onReconnecting func(peerID string, attempt int, nextRetryIn time.Duration)
+	onReconnected  func(peerID string, attempts int)
+	onGaveUp       func(peerID string, attempts int, lastErr error)
 }
 
 // NewNode 创建一个新的 Node 实例
@@ -83,12 +96,12 @@ func NewNode(opts ...Option) (*Node, error) {
 	}
 
 	// 根据配置决定是加载还是创建身份
-	var id *Identity
+	var id *crypto.Identity
 	var err error
 	if cfg.IdentityPath != "" {
-		id, err = LoadOrCreateIdentity(cfg.IdentityPath)
+		id, err = crypto.LoadOrCreateIdentity(cfg.IdentityPath)
 	} else {
-		id, err = NewIdentity()
+		id, err = crypto.NewIdentity()
 	}
 	if err != nil {
 		return nil, fmt.Errorf("创建身份失败: %w", err)
@@ -174,6 +187,41 @@ func (n *Node) Start() error {
 	// 初始化 NAT 探测器
 	n.natProber = nat.NewNATProber(n.conn)
 
+	// 启动 KCP 可靠 UDP 传输层（如果启用）
+	if n.Config.EnableKCP {
+		n.kcpTransport = NewKCPTransport(n, n.Config.KCPConfig)
+		if err := n.kcpTransport.Start(n.LocalAddr.Port); err != nil {
+			n.Config.Logger.Warn("KCP 启动失败，将使用原始 UDP: %v", err)
+			n.kcpTransport = nil
+		} else {
+			n.Config.Logger.Info("KCP 可靠传输层已启动，端口 %d", n.LocalAddr.Port+1)
+		}
+	}
+
+	// 初始化重连管理器（如果启用）
+	if n.Config.EnableReconnect {
+		reconnectCfg := n.Config.ReconnectConfig
+		if reconnectCfg == nil {
+			reconnectCfg = DefaultReconnectConfig()
+		}
+		n.reconnectManager = NewReconnectManager(n, reconnectCfg)
+
+		// 设置重连回调
+		n.mu.RLock()
+		if n.onReconnecting != nil {
+			n.reconnectManager.SetOnReconnecting(n.onReconnecting)
+		}
+		if n.onReconnected != nil {
+			n.reconnectManager.SetOnReconnected(n.onReconnected)
+		}
+		if n.onGaveUp != nil {
+			n.reconnectManager.SetOnGaveUp(n.onGaveUp)
+		}
+		n.mu.RUnlock()
+
+		n.Config.Logger.Info("重连管理器已启用，最大重试 %d 次", reconnectCfg.MaxRetries)
+	}
+
 	n.wg.Add(3) // 1 个用于 UDP 读，1 个用于 TCP Accept，1 个用于心跳
 	go n.handleRead()
 	go n.acceptTCP()
@@ -232,6 +280,16 @@ func (n *Node) GracefulStop(ctx context.Context) error {
 	// 关闭 NAT 探测器，停止清理协程
 	if n.natProber != nil {
 		n.natProber.Close()
+	}
+
+	// 关闭 KCP 传输层
+	if n.kcpTransport != nil {
+		n.kcpTransport.Close()
+	}
+
+	// 关闭重连管理器
+	if n.reconnectManager != nil {
+		n.reconnectManager.Close()
 	}
 
 	// 关闭所有对端连接
@@ -513,6 +571,7 @@ func (n *Node) Send(peerID string, data []byte) error {
 
 	transport, addr, conn := p.GetTransportInfo()
 
+	// TCP 传输（可靠）
 	if transport == "tcp" && conn != nil {
 		length := uint16(len(packet))
 		frame := make([]byte, 2+len(packet))
@@ -521,6 +580,28 @@ func (n *Node) Send(peerID string, data []byte) error {
 		copy(frame[2:], packet)
 		_, err := conn.Write(frame)
 		return err
+	}
+
+	// KCP 传输（可靠 UDP）
+	if transport == "kcp" && n.kcpTransport != nil && n.kcpTransport.HasSession(peerID) {
+		return n.kcpTransport.Send(peerID, packet)
+	}
+
+	// 尝试升级到 KCP（如果启用且是 UDP 模式）
+	if transport == "udp" && n.kcpTransport != nil && !n.kcpTransport.HasSession(peerID) {
+		if udpAddr, ok := addr.(*net.UDPAddr); ok {
+			// 异步升级到 KCP，当前数据仍通过 UDP 发送
+			go func() {
+				if err := n.kcpTransport.UpgradePeer(peerID, udpAddr); err != nil {
+					n.Config.Logger.Debug("KCP 升级失败: %v", err)
+				} else {
+					// 升级成功，更新 peer 传输类型
+					if peer, ok := n.Peers.Get(peerID); ok {
+						peer.UpgradeTransport(addr, nil, "kcp", peer.Session)
+					}
+				}
+			}()
+		}
 	}
 
 	if p.LinkMode == "relay" {
@@ -580,8 +661,8 @@ func (n *Node) handleTCP(conn net.Conn) {
 
 	// 使用缓冲池
 	header := make([]byte, 2)
-	frameBuf := GetLargeBuffer()
-	defer PutLargeBuffer(frameBuf)
+	frameBuf := pool.GetLargeBuffer()
+	defer pool.PutLargeBuffer(frameBuf)
 
 	for {
 		_, err := io.ReadFull(conn, header)
@@ -646,8 +727,8 @@ func (n *Node) handleRead() {
 	defer n.wg.Done()
 
 	// 使用缓冲池
-	bufPtr := GetLargeBuffer()
-	defer PutLargeBuffer(bufPtr)
+	bufPtr := pool.GetLargeBuffer()
+	defer pool.PutLargeBuffer(bufPtr)
 	buf := *bufPtr
 
 	for {
@@ -766,7 +847,7 @@ func (n *Node) processData(remoteAddr net.Addr, payload []byte) {
 // sendRaw 发送原始包（用于握手）
 func (n *Node) sendRaw(conn net.Conn, addr net.Addr, transport string, packet []byte) {
 	if transport == "tcp" && conn != nil {
-		frame := EncodeTCPFrame(packet)
+		frame := protocol.EncodeTCPFrame(packet)
 		if _, err := conn.Write(frame); err != nil {
 			n.Config.Logger.Error("TCP write error: %v", err)
 		}
@@ -869,4 +950,69 @@ func (n *Node) GetPeerStats(peerID string) (peer.PeerStats, bool) {
 		return peer.PeerStats{}, false
 	}
 	return p.GetStats(), true
+}
+
+// --- 重连相关方法 ---
+
+// OnReconnecting 设置重连中回调
+// 当节点开始尝试重连时触发，提供当前尝试次数和下次重试延迟
+func (n *Node) OnReconnecting(handler func(peerID string, attempt int, nextRetryIn time.Duration)) {
+	n.mu.Lock()
+	n.onReconnecting = handler
+	if n.reconnectManager != nil {
+		n.reconnectManager.SetOnReconnecting(handler)
+	}
+	n.mu.Unlock()
+}
+
+// OnReconnected 设置重连成功回调
+// 当节点成功重连时触发，提供总尝试次数
+func (n *Node) OnReconnected(handler func(peerID string, attempts int)) {
+	n.mu.Lock()
+	n.onReconnected = handler
+	if n.reconnectManager != nil {
+		n.reconnectManager.SetOnReconnected(handler)
+	}
+	n.mu.Unlock()
+}
+
+// OnGaveUp 设置放弃重连回调
+// 当达到最大重试次数后触发，提供总尝试次数和最后一次错误
+func (n *Node) OnGaveUp(handler func(peerID string, attempts int, lastErr error)) {
+	n.mu.Lock()
+	n.onGaveUp = handler
+	if n.reconnectManager != nil {
+		n.reconnectManager.SetOnGaveUp(handler)
+	}
+	n.mu.Unlock()
+}
+
+// GetReconnectInfo 获取指定节点的重连信息
+func (n *Node) GetReconnectInfo(peerID string) *ReconnectInfo {
+	if n.reconnectManager == nil {
+		return nil
+	}
+	return n.reconnectManager.GetReconnectInfo(peerID)
+}
+
+// GetAllReconnectInfo 获取所有正在重连的节点信息
+func (n *Node) GetAllReconnectInfo() []*ReconnectInfo {
+	if n.reconnectManager == nil {
+		return nil
+	}
+	return n.reconnectManager.GetAllReconnectInfo()
+}
+
+// CancelReconnect 取消指定节点的重连
+func (n *Node) CancelReconnect(peerID string) {
+	if n.reconnectManager != nil {
+		n.reconnectManager.CancelReconnect(peerID)
+	}
+}
+
+// CancelAllReconnects 取消所有重连任务
+func (n *Node) CancelAllReconnects() {
+	if n.reconnectManager != nil {
+		n.reconnectManager.CancelAll()
+	}
 }

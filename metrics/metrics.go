@@ -40,6 +40,12 @@ type Collector struct {
 	// 错误统计
 	errorsTotal int64 // 总错误数
 
+	// 重连统计
+	reconnectAttempts int64 // 重连尝试次数
+	reconnectSuccess  int64 // 重连成功次数
+	reconnectFailed   int64 // 重连失败次数（单次尝试失败）
+	reconnectGaveUp   int64 // 放弃重连次数（达到最大重试）
+
 	// 启动时间
 	startTime time.Time
 
@@ -165,6 +171,28 @@ func (c *Collector) IncErrorsTotal() {
 	atomic.AddInt64(&c.errorsTotal, 1)
 }
 
+// --- 重连统计 ---
+
+// IncReconnectAttempts 增加重连尝试次数
+func (c *Collector) IncReconnectAttempts() {
+	atomic.AddInt64(&c.reconnectAttempts, 1)
+}
+
+// IncReconnectSuccess 增加重连成功次数
+func (c *Collector) IncReconnectSuccess() {
+	atomic.AddInt64(&c.reconnectSuccess, 1)
+}
+
+// IncReconnectFailed 增加单次重连失败次数
+func (c *Collector) IncReconnectFailed() {
+	atomic.AddInt64(&c.reconnectFailed, 1)
+}
+
+// IncReconnectGaveUp 增加放弃重连次数
+func (c *Collector) IncReconnectGaveUp() {
+	atomic.AddInt64(&c.reconnectGaveUp, 1)
+}
+
 // --- 快照获取 ---
 
 // Snapshot 指标快照
@@ -203,6 +231,13 @@ type Snapshot struct {
 	// 错误统计
 	ErrorsTotal int64
 
+	// 重连统计
+	ReconnectAttempts int64   // 重连尝试次数
+	ReconnectSuccess  int64   // 重连成功次数
+	ReconnectFailed   int64   // 重连失败次数
+	ReconnectGaveUp   int64   // 放弃重连次数
+	ReconnectRate     float64 // 重连成功率
+
 	// 计算的速率
 	BytesSentPerSec int64
 	BytesRecvPerSec int64
@@ -236,6 +271,11 @@ func (c *Collector) GetSnapshot() Snapshot {
 		RelayAuthFailed: atomic.LoadInt64(&c.relayAuthFailed),
 
 		ErrorsTotal: atomic.LoadInt64(&c.errorsTotal),
+
+		ReconnectAttempts: atomic.LoadInt64(&c.reconnectAttempts),
+		ReconnectSuccess:  atomic.LoadInt64(&c.reconnectSuccess),
+		ReconnectFailed:   atomic.LoadInt64(&c.reconnectFailed),
+		ReconnectGaveUp:   atomic.LoadInt64(&c.reconnectGaveUp),
 	}
 
 	// 计算平均握手延迟
@@ -250,6 +290,11 @@ func (c *Collector) GetSnapshot() Snapshot {
 	totalSuccess := s.PunchSuccessUDP + s.PunchSuccessTCP
 	if totalAttempts > 0 {
 		s.PunchSuccessRate = float64(totalSuccess) / float64(totalAttempts)
+	}
+
+	// 计算重连成功率
+	if s.ReconnectAttempts > 0 {
+		s.ReconnectRate = float64(s.ReconnectSuccess) / float64(s.ReconnectAttempts)
 	}
 
 	return s
@@ -282,6 +327,11 @@ func (c *Collector) Reset() {
 	atomic.StoreInt64(&c.relayAuthFailed, 0)
 
 	atomic.StoreInt64(&c.errorsTotal, 0)
+
+	atomic.StoreInt64(&c.reconnectAttempts, 0)
+	atomic.StoreInt64(&c.reconnectSuccess, 0)
+	atomic.StoreInt64(&c.reconnectFailed, 0)
+	atomic.StoreInt64(&c.reconnectGaveUp, 0)
 
 	c.startTime = time.Now()
 }

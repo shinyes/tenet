@@ -3,6 +3,8 @@ package node
 import (
 	"net"
 	"time"
+
+	"github.com/cykyes/tenet/internal/protocol"
 )
 
 // heartbeatLoop 心跳循环，定期向所有节点发送心跳并检测超时
@@ -42,7 +44,7 @@ func (n *Node) sendHeartbeats() {
 		packet := make([]byte, 13)
 		copy(packet[0:4], []byte(MagicBytes))
 		packet[4] = PacketTypeHeartbeat
-		PutTimestamp(packet[5:], time.Now().UnixNano())
+		protocol.PutTimestamp(packet[5:], time.Now().UnixNano())
 
 		transport, addr, conn := p.GetTransportInfo()
 		n.sendRaw(conn, addr, transport, packet)
@@ -72,6 +74,11 @@ func (n *Node) checkHeartbeatTimeouts() {
 
 // removePeer 移除节点并触发回调
 func (n *Node) removePeer(peerID string) {
+	n.removePeerWithReconnect(peerID, true)
+}
+
+// removePeerWithReconnect 移除节点并可选地触发重连
+func (n *Node) removePeerWithReconnect(peerID string, shouldReconnect bool) {
 	p, ok := n.Peers.Get(peerID)
 	if !ok {
 		return
@@ -84,6 +91,11 @@ func (n *Node) removePeer(peerID string) {
 
 	// 保存原始地址用于重连
 	originalAddr := p.GetOriginalAddr()
+
+	// 关闭 KCP 会话（如果有）
+	if n.kcpTransport != nil {
+		n.kcpTransport.RemoveSession(peerID)
+	}
 
 	// 关闭 TCP 连接（如果有）
 	p.Close()
@@ -108,35 +120,9 @@ func (n *Node) removePeer(peerID string) {
 		go callback(peerID)
 	}
 
-	// 尝试重连（在后台进行）
-	if originalAddr != "" {
-		go func(addr string, targetPeerID string) {
-			// 等待一段时间再尝试重连
-			select {
-			case <-n.closing:
-				return
-			case <-time.After(5 * time.Second):
-			}
-
-			// 再次检查节点是否仍在运行
-			select {
-			case <-n.closing:
-				return
-			default:
-			}
-
-			// 检查是否已经重新连接
-			for _, pid := range n.Peers.IDs() {
-				if pid == targetPeerID {
-					return // 已重连
-				}
-			}
-
-			n.Config.Logger.Info("尝试重新连接到 %s", addr)
-			if err := n.Connect(addr); err != nil {
-				n.Config.Logger.Error("重连 %s 失败: %v", addr, err)
-			}
-		}(originalAddr, peerID)
+	// 使用重连管理器进行重连（如果启用）
+	if shouldReconnect && originalAddr != "" && n.reconnectManager != nil {
+		n.reconnectManager.ScheduleReconnect(peerID, originalAddr)
 	}
 }
 
@@ -156,7 +142,7 @@ func (n *Node) processHeartbeat(conn net.Conn, remoteAddr net.Addr, transport st
 	packet := make([]byte, 13)
 	copy(packet[0:4], []byte(MagicBytes))
 	packet[4] = PacketTypeHeartbeatAck
-	PutTimestamp(packet[5:], time.Now().UnixNano())
+	protocol.PutTimestamp(packet[5:], time.Now().UnixNano())
 
 	n.sendRaw(conn, remoteAddr, transport, packet)
 }

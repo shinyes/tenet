@@ -1,4 +1,5 @@
-package node
+// Package pool 提供高效的缓冲池实现，减少 GC 压力
+package pool
 
 import (
 	"sync"
@@ -129,37 +130,4 @@ func (b *Buffer) Release() {
 	b.pool.Put(b.data)
 	b.data = nil
 	b.pool = nil
-}
-
-// --- 公共辅助函数 ---
-
-// BuildHandshakePacket 构造握手包
-func BuildHandshakePacket(msg []byte) []byte {
-	packet := make([]byte, 5+len(msg))
-	copy(packet[0:4], []byte("TENT"))
-	packet[4] = 0x01 // PacketTypeHandshake
-	copy(packet[5:], msg)
-	return packet
-}
-
-// EncodeTCPFrame 编码 TCP 帧（添加长度前缀）
-func EncodeTCPFrame(packet []byte) []byte {
-	length := uint16(len(packet))
-	frame := make([]byte, 2+len(packet))
-	frame[0] = byte(length >> 8)
-	frame[1] = byte(length)
-	copy(frame[2:], packet)
-	return frame
-}
-
-// PutTimestamp 将时间戳写入字节数组（小端序）
-func PutTimestamp(buf []byte, timestamp int64) {
-	buf[0] = byte(timestamp)
-	buf[1] = byte(timestamp >> 8)
-	buf[2] = byte(timestamp >> 16)
-	buf[3] = byte(timestamp >> 24)
-	buf[4] = byte(timestamp >> 32)
-	buf[5] = byte(timestamp >> 40)
-	buf[6] = byte(timestamp >> 48)
-	buf[7] = byte(timestamp >> 56)
 }
