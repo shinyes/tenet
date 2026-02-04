@@ -4,6 +4,8 @@
 
 ## 特性
 
+- 📦 **自动分包**：支持任意大小数据发送（透明分片与重组）
+- 🆔 **灵活身份**：支持 JSON 格式的可移植身份凭证
 - 🔒 **端到端加密**：使用 Noise Protocol 框架（与 WireGuard 相同）
 - 🔑 **密码组网**：相同密码的节点自动组成私有网络（密码必须配置）
 - 🕳️ **NAT 穿透**：支持 TCP (Simultaneous Open) 与 UDP 并行打洞，智能选择最佳链路
@@ -123,21 +125,15 @@ go run examples/basic/main.go -l 1232 -secret "mysecret" -relay "1.2.3.4:9000"
 ```
 > 所有节点默认启用中继功能。当两个节点无法直连时，会自动通过已连接的中继节点进行数据转发，并优先选择延迟最低的节点。
 
-### 编译示例
+### 自动分包 (Large Data Transfer)
+- **切片传输**: 大于 60KB 的数据会自动被切分为多个分片。
+- **重组缓冲区**: 接收端自动重组，单次传输支持上限 50MB（默认，可在 `MaxReassemblySize` 调整）。
+- **通道锁定**: 传输过程中自动锁定可靠通道（TCP/KCP），防止链路切换导致的乱序和解密失败。
 
-**Windows**:
-```bash
-go build -o build\basic.exe .\examples\basic
-```
-
-连接建立后，使用 `peers` 命令可查看当前链路状态：
-```
-> peers
-已连接节点:
-  1. 8cac1d66... [tcp/p2p]
-```
-- `tcp/udp` 表示传输协议（TCP 抗阻塞，优先使用）
-- `p2p/relay` 表示链路模式（直连或中继）
+### 运行示例
+提供了完整的命令行示例程序：
+- `examples/basic`: 基础连接与简单消息演示。
+- `examples/large_transfer`: **(New)** 大文件传输压力测试，演示 100MB+ 数据的稳定传输。
 
 ## API 参考
 
@@ -150,7 +146,7 @@ go build -o build\basic.exe .\examples\basic
 | `Stop()` | 停止服务 |
 | `GracefulStop()` | 优雅关闭（通知对端后再断开） |
 | `Connect(addr)` | 连接对等节点（同时尝试 TCP/UDP 打洞） |
-| `Send(peerID, data)` | 发送数据 |
+| `Send(peerID, data)` | 发送数据（支持大文件自动分片） |
 | `OnReceive(handler)` | 设置接收回调 |
 | `OnPeerConnected(handler)` | 节点连接回调 |
 | `OnPeerDisconnected(handler)` | 节点断开回调 |
@@ -240,7 +236,8 @@ tenet/
 │   └── protocol/         # 协议编解码工具
 │
 ├── examples/             # 示例代码
-│   └── basic/            # 命令行示例程序
+│   ├── basic/            # 命令行基础示例
+│   └── large_transfer/   # 大文件分片传输测试示例
 │
 ├── build/                # 构建产物
 └── doc.go                # 包文档
@@ -265,9 +262,11 @@ tenet/
 5. **传输升级**：
    - KCP 提供快速可靠的 UDP 传输
    - TCP 握手成功后，自动升级至 TCP 通道（抗 QoS）
-6. **中继回退**：打洞失败时，选择延迟最低的已连接节点进行中继
-7. **节点发现**：新节点连接后自动交换已知节点列表
-8. **心跳保活**：每 5 秒发送心跳，30 秒无响应则断开并尝试重连
+   - **平滑切换**: 引入 `PreviousSession` 机制，升级瞬间的“在途”旧包仍可被正确解密。
+6. **通道锁定**: 发送大包时自动锁定最优传输通道，防止中继或升级导致的 Nonce 乱序。
+7. **中继回退**：打洞失败时，选择延迟最低的已连接节点进行中继
+8. **节点发现**：新节点连接后自动交换已知节点列表
+9. **心跳保活**：每 5 秒发送心跳，30 秒无响应则断开并尝试重连
 
 ### 节点发现
 

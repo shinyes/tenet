@@ -1,6 +1,7 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -34,6 +35,16 @@ const (
 	// 中继模式
 	RelayModeForward = 0x01 // 请求转发
 	RelayModeTarget  = 0x02 // 目标侧接收
+
+	// 分包类型
+	FrameTypeSingle = 0x01 // 独立完整包
+	FrameTypeFirst  = 0x02 // 分片起始包
+	FrameTypeMiddle = 0x03 // 分片中间包
+	FrameTypeLast   = 0x04 // 分片结束包
+
+	// 分包常量
+	MaxPayloadSize    = 60 * 1024        // 60KB (留有安全余量 < 65514)
+	MaxReassemblySize = 50 * 1024 * 1024 // 50MB (最大重组限制)
 )
 
 // Node 表示一个 P2P 节点
@@ -586,6 +597,10 @@ func (n *Node) Connect(addrStr string) error {
 }
 
 // Send 向对等节点发送数据
+// 如果数据超过 MaxPayloadSize，将自动分包发送
+// Send 向对等节点发送数据
+// 如果数据超过 MaxPayloadSize，将自动分包发送
+// 为保证加密数据流的 Nonce 顺序，一次 Send 调用中必须锁定单一传输通道 (TCP/KCP)
 func (n *Node) Send(peerID string, data []byte) error {
 	// 检查是否尝试向自己发送
 	if peerID == n.ID() {
@@ -600,80 +615,99 @@ func (n *Node) Send(peerID string, data []byte) error {
 		return fmt.Errorf("对等节点会话未建立")
 	}
 
-	encrypted, err := p.Session.Encrypt(data)
-	if err != nil {
-		return err
-	}
+	// === 1. 确定传输通道 (Writer) ===
+	// 必须在发送前锁定通过，并在整个 Send 过程中保持不变，防止中途切换导致乱序
+	var sendFunc func(payload []byte) error
 
-	// 包格式: [Magic(4)] [Type(1)] [Data]
-	packet := make([]byte, 5+len(encrypted))
-	copy(packet[0:4], []byte("TENT"))
-	packet[4] = PacketTypeData
-	copy(packet[5:], encrypted)
+	transport, _, conn := p.GetTransportInfo()
 
-	// 更新流量统计
-	p.AddBytesSent(int64(len(data)))
-	if n.metrics != nil {
-		n.metrics.AddBytesSent(int64(len(data)))
-	}
-
-	transport, addr, conn := p.GetTransportInfo()
-
-	// TCP 传输（可靠）
+	// 优先使用 TCP
 	if transport == "tcp" && conn != nil {
-		length := uint16(len(packet))
-		frame := make([]byte, 2+len(packet))
-		frame[0] = byte(length >> 8)
-		frame[1] = byte(length)
-		copy(frame[2:], packet)
-		_, err := conn.Write(frame)
-		return err
-	}
-
-	// KCP 传输（可靠 UDP）
-	if transport == "kcp" && n.kcpTransport != nil && n.kcpTransport.HasSession(peerID) {
-		return n.kcpTransport.Send(peerID, packet)
-	}
-
-	// 尝试升级到 KCP（如果启用且是 UDP 模式）
-	if transport == "udp" && n.kcpTransport != nil && !n.kcpTransport.HasSession(peerID) {
-		if udpAddr, ok := addr.(*net.UDPAddr); ok {
-			// 异步升级到 KCP，当前数据仍通过 UDP 发送
-			go func() {
-				if err := n.kcpTransport.UpgradePeer(peerID, udpAddr); err != nil {
-					n.Config.Logger.Debug("KCP 升级失败: %v", err)
-				} else {
-					// 升级成功，更新 peer 传输类型
-					if peer, ok := n.Peers.Get(peerID); ok {
-						peer.UpgradeTransport(addr, nil, "kcp", peer.Session)
-					}
-				}
-			}()
-		}
-	}
-
-	if p.LinkMode == "relay" {
-		if relayAddr, ok := addr.(*net.UDPAddr); ok {
-			if p.RelayTarget != nil {
-				relayPacket, err := n.buildRelayPacket(RelayModeForward, p.RelayTarget, packet)
-				if err != nil {
-					return err
-				}
-				_, err = n.conn.WriteToUDP(relayPacket, relayAddr)
-				return err
-			}
-			_, err = n.conn.WriteToUDP(packet, relayAddr)
+		sendFunc = func(payload []byte) error {
+			// 封装帧长度头 (2 bytes)
+			length := uint16(len(payload))
+			frame := make([]byte, 2+len(payload))
+			frame[0] = byte(length >> 8)
+			frame[1] = byte(length)
+			copy(frame[2:], payload)
+			_, err := conn.Write(frame)
 			return err
 		}
+	} else if n.kcpTransport != nil && n.kcpTransport.HasSession(p.ID) {
+		// 只要有 KCP 会话就优先使用
+		sendFunc = func(payload []byte) error {
+			return n.kcpTransport.Send(p.ID, payload)
+		}
+	} else if transport == "udp" {
+		// 尝试建立 KCP
+		addr := p.Addr
+		if udpAddr, ok := addr.(*net.UDPAddr); ok && n.kcpTransport != nil {
+			if err := n.kcpTransport.UpgradePeer(p.ID, udpAddr); err == nil {
+				// 升级成功，锁定使用 KCP
+				sendFunc = func(payload []byte) error {
+					return n.kcpTransport.Send(p.ID, payload)
+				}
+			} else {
+				return fmt.Errorf("可靠传输建立失败: %w", err)
+			}
+		} else {
+			return fmt.Errorf("无法建立可靠传输 (仅 UDP 无 KCP 支持)")
+		}
+	} else {
+		return fmt.Errorf("没有可用的可靠传输通道")
 	}
 
-	// 回退到 UDP
-	udpAddr, ok := addr.(*net.UDPAddr)
-	if !ok {
-		return fmt.Errorf("对等节点的 UDP 地址无效")
+	// 内部发送辅助函数：加密 + 封包 + 发送
+	sendFrame := func(frameType byte, payload []byte) error {
+		// 应用层封包: [FrameType(1)] [Payload]
+		plainFrame := make([]byte, 1+len(payload))
+		plainFrame[0] = frameType
+		copy(plainFrame[1:], payload)
+
+		encrypted, err := p.Session.Encrypt(plainFrame)
+		if err != nil {
+			return err
+		}
+
+		// 包格式: [Magic(4)] [Type(1)] [Data(Encrypted)]
+		packet := make([]byte, 5+len(encrypted))
+		copy(packet[0:4], []byte("TENT"))
+		packet[4] = PacketTypeData
+		copy(packet[5:], encrypted)
+
+		// 更新流量统计
+		p.AddBytesSent(int64(len(payload)))
+		if n.metrics != nil {
+			n.metrics.AddBytesSent(int64(len(payload)))
+		}
+
+		// 使用锁定的通道发送
+		return sendFunc(packet)
 	}
-	_, err = n.conn.WriteToUDP(packet, udpAddr)
-	return err
+
+	// === 2. 执行分片发送逻辑 ===
+	totalLen := len(data)
+	if totalLen <= MaxPayloadSize {
+		return sendFrame(FrameTypeSingle, data)
+	}
+
+	// 1. 发送 First 帧
+	if err := sendFrame(FrameTypeFirst, data[:MaxPayloadSize]); err != nil {
+		return err
+	}
+
+	// 2. 循环发送 Middle 帧
+	offset := MaxPayloadSize
+	for (totalLen - offset) > MaxPayloadSize {
+		end := offset + MaxPayloadSize
+		if err := sendFrame(FrameTypeMiddle, data[offset:end]); err != nil {
+			return err
+		}
+		offset = end
+	}
+
+	// 3. 发送 Last 帧
+	return sendFrame(FrameTypeLast, data[offset:])
 }
 
 // acceptTCP 接收 TCP 入站连接
@@ -847,6 +881,7 @@ func (n *Node) handleRead() {
 // handlePacket 处理通用包
 func (n *Node) handlePacket(conn net.Conn, remoteAddr net.Addr, transport string, packetType byte, payload []byte) {
 	switch packetType {
+
 	case PacketTypeHandshake:
 		n.processHandshake(conn, remoteAddr, transport, payload)
 	case PacketTypeData:
@@ -877,11 +912,7 @@ func (n *Node) processData(remoteAddr net.Addr, payload []byte) {
 		return
 	}
 
-	if p.Session == nil {
-		return
-	}
-
-	plaintext, err := p.Session.Decrypt(payload)
+	plaintext, err := p.Decrypt(payload)
 	if err != nil {
 		n.Config.Logger.Warn("来自 %s 的解密错误: %v", peerID[:8], err)
 		if n.metrics != nil {
@@ -890,34 +921,99 @@ func (n *Node) processData(remoteAddr net.Addr, payload []byte) {
 		return
 	}
 
-	// 更新接收流量统计
-	p.AddBytesReceived(int64(len(plaintext)))
+	// 协议变更：第一个字节是 FrameType
+	if len(plaintext) < 1 {
+		return
+	}
+	frameType := plaintext[0]
+	frameData := plaintext[1:]
+	// fmt.Printf("!!! RECV frame type %d, size %d from %s\n", frameType, len(frameData), peerID[:8])
+
+	// 流量统计（统计实际的应用层数据）
+	p.AddBytesReceived(int64(len(frameData)))
 	if n.metrics != nil {
-		n.metrics.AddBytesReceived(int64(len(plaintext)))
+		n.metrics.AddBytesReceived(int64(len(frameData)))
 	}
 
 	n.mu.RLock()
 	onReceive := n.onReceive
 	n.mu.RUnlock()
-	if onReceive != nil {
-		onReceive(peerID, plaintext)
-	} else {
-		n.Config.Logger.Warn("onReceive 回调为空")
+
+	if onReceive == nil {
+		return
+	}
+
+	switch frameType {
+	case FrameTypeSingle:
+		// 单包: 直接回调
+		p.ReassemblyBuffer = nil // 清理之前的残包（如果有）
+		onReceive(peerID, frameData)
+
+	case FrameTypeFirst:
+		// 首包: 初始化/重置缓冲区
+		if p.ReassemblyBuffer == nil {
+			p.ReassemblyBuffer = new(bytes.Buffer)
+		} else {
+			p.ReassemblyBuffer.Reset()
+		}
+		p.ReassemblyBuffer.Write(frameData)
+		p.LastFrameTime = time.Now()
+
+	case FrameTypeMiddle:
+		// 中间包: 追加
+		if p.ReassemblyBuffer == nil {
+			// 丢失了首包，忽略
+			return
+		}
+		// 安全检查: 防止内存溢出
+		if p.ReassemblyBuffer.Len()+len(frameData) > MaxReassemblySize {
+			n.Config.Logger.Warn("Peer %s 重组缓冲区溢出，丢弃", peerID[:8])
+			p.ReassemblyBuffer = nil
+			return
+		}
+		p.ReassemblyBuffer.Write(frameData)
+		p.LastFrameTime = time.Now()
+
+	case FrameTypeLast:
+		// 尾包: 追加并回调
+		if p.ReassemblyBuffer == nil {
+			// 丢失了首包，忽略
+			return
+		}
+		if p.ReassemblyBuffer.Len()+len(frameData) > MaxReassemblySize {
+			n.Config.Logger.Warn("Peer %s 重组缓冲区溢出，丢弃", peerID[:8])
+			p.ReassemblyBuffer = nil
+			return
+		}
+		p.ReassemblyBuffer.Write(frameData)
+
+		// 完成重组，回调完整数据
+		completeData := make([]byte, p.ReassemblyBuffer.Len())
+		copy(completeData, p.ReassemblyBuffer.Bytes())
+		onReceive(peerID, completeData)
+
+		// 重置缓冲区
+		p.ReassemblyBuffer.Reset() // 保留内存但清空内容
+		p.ReassemblyBuffer = nil   // 或者直接设为 nil 以释放大内存？
+		// 策略：设为 nil 以释放大块内存，防止长期占用
 	}
 }
 
 // sendRaw 发送原始包（用于握手）
-func (n *Node) sendRaw(conn net.Conn, addr net.Addr, transport string, packet []byte) {
+func (n *Node) sendRaw(conn net.Conn, addr net.Addr, transport string, packet []byte) error {
 	if transport == "tcp" && conn != nil {
 		frame := protocol.EncodeTCPFrame(packet)
 		if _, err := conn.Write(frame); err != nil {
-			n.Config.Logger.Error("TCP write error: %v", err)
+			return fmt.Errorf("TCP write error: %w", err)
 		}
+		return nil
 	} else if udpAddr, ok := addr.(*net.UDPAddr); ok {
 		if _, err := n.tentConn.WriteTo(packet, udpAddr); err != nil {
-			n.Config.Logger.Error("UDP write error: %v", err)
+			return fmt.Errorf("UDP write error: %w", err)
 		}
+		return nil
 	}
+	return fmt.Errorf("不支持的传输或无效地址")
 }
 
 // GetPeerTransport 返回对端使用的传输协议

@@ -1,6 +1,8 @@
 package peer
 
 import (
+	"bytes"
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -43,15 +45,17 @@ func (s ConnState) String() string {
 
 // Peer represents a connected node
 type Peer struct {
-	ID           string
-	Addr         net.Addr     // Generalized to net.Addr
-	OriginalAddr string       // 原始连接地址（用于重连）
-	Conn         net.Conn     // Active TCP connection, if any
-	Transport    string       // "tcp" or "udp"
-	LinkMode     string       // "p2p" or "relay"
-	RelayTarget  *net.UDPAddr // 通过中继访问的目标地址（发起方使用）
-	Session      *crypto.Session
-	LastSeen     time.Time
+	ID              string
+	Addr            net.Addr     // Generalized to net.Addr
+	OriginalAddr    string       // 原始连接地址（用于重连）
+	Conn            net.Conn     // Active TCP connection, if any
+	Transport       string       // "tcp" or "udp"
+	LinkMode        string       // "p2p" or "relay"
+	RelayTarget     *net.UDPAddr // 通过中继访问的目标地址（发起方使用）
+	Session         *crypto.Session
+	PreviousSession *crypto.Session // 上一个会话（用于平滑切换）
+
+	LastSeen time.Time
 
 	// 连接状态
 	State ConnState
@@ -63,6 +67,9 @@ type Peer struct {
 	MessagesSent   int64         // 发送消息数
 	MessagesRecv   int64         // 接收消息数
 	ConnectLatency time.Duration // 连接建立延迟
+	// 自动分包重组
+	ReassemblyBuffer *bytes.Buffer // 重组缓冲区
+	LastFrameTime    time.Time     // 上次收到分片的时间
 
 	mu sync.RWMutex
 }
@@ -72,6 +79,15 @@ func (p *Peer) UpgradeTransport(addr net.Addr, conn net.Conn, transport string, 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// 防止从 TCP 降级到 UDP/KCP
+	// 如果当前已经是 TCP，且新传输不是 TCP，则忽略升级（保留 TCP）
+	if p.Transport == "tcp" && transport != "tcp" {
+		// 但如果要更新 Session，还是允许的？
+		// 不，通常 Transport 和 Session 是绑定的。
+		// 如果对方试图切换回 KCP，我们应该保持 TCP 连接。
+		return
+	}
+
 	// Close old connection if it exists and is different.
 	// IMPORTANT: Only close if the previous transport was NOT UDP,
 	// because UDP uses the shared Listener (n.conn) which must stay open.
@@ -80,8 +96,13 @@ func (p *Peer) UpgradeTransport(addr net.Addr, conn net.Conn, transport string, 
 	}
 
 	// 安全关闭旧的 Session，清除密钥材料
+	// 策略变更：不要立即关闭，而是将其移动到 PreviousSession
+	// 以便处理在传输切换期间仍在途中的旧加密包
 	if p.Session != nil && p.Session != session {
-		p.Session.Close()
+		if p.PreviousSession != nil {
+			p.PreviousSession.Close() // 关闭更早的会话
+		}
+		p.PreviousSession = p.Session
 	}
 
 	p.Addr = addr
@@ -137,6 +158,10 @@ func (p *Peer) Close() {
 	if p.Session != nil {
 		p.Session.Close()
 		p.Session = nil
+	}
+	if p.PreviousSession != nil {
+		p.PreviousSession.Close()
+		p.PreviousSession = nil
 	}
 
 	if p.Conn != nil && p.Transport == "tcp" {
@@ -261,4 +286,30 @@ func (ps *PeerStore) Count() int {
 	ps.mu.RLock()
 	defer ps.mu.RUnlock()
 	return len(ps.peers)
+}
+
+// Decrypt 尝试使用当前或旧会话解密数据
+func (p *Peer) Decrypt(payload []byte) ([]byte, error) {
+	p.mu.RLock()
+	session := p.Session
+	prevSession := p.PreviousSession
+	p.mu.RUnlock()
+
+	if session == nil {
+		return nil, fmt.Errorf("会话未建立")
+	}
+
+	plaintext, err := session.Decrypt(payload)
+	if err == nil {
+		return plaintext, nil
+	}
+
+	// 尝试回退到旧会话
+	if prevSession != nil {
+		if plaintext, err := prevSession.Decrypt(payload); err == nil {
+			return plaintext, nil
+		}
+	}
+
+	return nil, err
 }
