@@ -28,8 +28,8 @@ func TestKCPTransportBasic(t *testing.T) {
 		t.Fatal("NewKCPTransport 返回 nil")
 	}
 
-	// 启动传输层
-	err = transport.Start(node.LocalAddr.Port)
+	// 启动传输层（使用 UDP 端口 + 1，避免与 UDP socket 冲突）
+	err = transport.Start(node.LocalAddr.Port + 1)
 	if err != nil {
 		t.Fatalf("启动 KCP 传输层失败: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestKCPConcurrentWrite(t *testing.T) {
 	}
 	defer server.Close()
 
-	serverAddr := server.LocalAddr().String()
+	serverAddr := getConnectableAddr(server.LocalAddr())
 
 	// 接收协程
 	totalReceived := make(chan int, 1)
@@ -199,7 +199,7 @@ func TestKCPManagerSessionManagement(t *testing.T) {
 	}
 	defer manager.Close()
 
-	serverAddr := manager.LocalAddr().String()
+	serverAddr := getConnectableAddr(manager.LocalAddr())
 
 	// 创建客户端连接
 	client := NewKCPManager(cfg)

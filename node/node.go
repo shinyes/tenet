@@ -43,10 +43,11 @@ type Node struct {
 	Identity *crypto.Identity
 	Peers    *peer.PeerStore
 
-	conn        *net.UDPConn
-	tcpListener *net.TCPListener
-	LocalAddr   *net.UDPAddr
-	PublicAddr  *net.UDPAddr // Can be set after NAT discovery
+	conn         *net.UDPConn
+	tcpListener  *net.TCPListener
+	tcpLocalPort int // 实际的 TCP 监听端口
+	LocalAddr    *net.UDPAddr
+	PublicAddr   *net.UDPAddr // Can be set after NAT discovery
 
 	localPeerID       string // 本节点的 PeerID，用于节点发现时过滤
 	pendingHandshakes map[string]*crypto.HandshakeState
@@ -170,8 +171,13 @@ func (n *Node) Start() error {
 
 	// 启动 TCP 监听（用于接入连接与打洞基础）
 	// 使用 transport.ListenConfig（SO_REUSEADDR）以便打洞逻辑也能绑定该端口
+	tcpPort := n.Config.TCPPort
+	if tcpPort == 0 {
+		tcpPort = n.LocalAddr.Port // 默认与 UDP 端口相同
+	}
+	tcpListenAddr := fmt.Sprintf(":%d", tcpPort)
 	lc := transport.ListenConfig()
-	listener, err := lc.Listen(context.Background(), "tcp", listenAddr)
+	listener, err := lc.Listen(context.Background(), "tcp", tcpListenAddr)
 	if err != nil {
 		conn.Close()
 		return fmt.Errorf("TCP 监听失败: %w", err)
@@ -183,18 +189,23 @@ func (n *Node) Start() error {
 		return fmt.Errorf("意外的监听器类型: %T", listener)
 	}
 	n.tcpListener = tcpListener
+	n.tcpLocalPort = tcpPort
 
 	// 初始化 NAT 探测器
 	n.natProber = nat.NewNATProber(n.conn)
 
 	// 启动 KCP 可靠 UDP 传输层（如果启用）
 	if n.Config.EnableKCP {
+		kcpPort := n.Config.KCPPort
+		if kcpPort == 0 {
+			kcpPort = n.LocalAddr.Port + 1 // 默认使用 UDP 端口 + 1，避免与 UDP socket 冲突
+		}
 		n.kcpTransport = NewKCPTransport(n, n.Config.KCPConfig)
-		if err := n.kcpTransport.Start(n.LocalAddr.Port); err != nil {
+		if err := n.kcpTransport.Start(kcpPort); err != nil {
 			n.Config.Logger.Warn("KCP 启动失败，将使用原始 UDP: %v", err)
 			n.kcpTransport = nil
 		} else {
-			n.Config.Logger.Info("KCP 可靠传输层已启动，端口 %d", n.LocalAddr.Port+1)
+			n.Config.Logger.Info("KCP 可靠传输层已启动，端口 %d", kcpPort)
 		}
 	}
 
@@ -410,7 +421,7 @@ func (n *Node) Connect(addrStr string) error {
 		defer cancel()
 
 		puncher := nat.NewTCPHolePuncher()
-		conn, err := puncher.Punch(ctx, n.LocalAddr.Port, rTCPAddr)
+		conn, err := puncher.Punch(ctx, n.tcpLocalPort, rTCPAddr)
 		if err != nil {
 			resultChan <- ConnectResult{Err: err}
 			return

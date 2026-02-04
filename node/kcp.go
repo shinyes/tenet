@@ -78,8 +78,8 @@ func NewKCPManager(config *KCPConfig) *KCPManager {
 
 // Listen 在指定端口监听 KCP 连接
 func (m *KCPManager) Listen(port int) error {
-	// 明确使用 IPv4 以避免 Windows 上的兼容性问题
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	// 明确使用 IPv4 所有接口，避免 Windows 上的 IPv6 兼容性问题
+	addr := fmt.Sprintf("0.0.0.0:%d", port)
 
 	// 使用无 FEC 的 KCP（我们已经有 Noise 加密）
 	listener, err := kcp.ListenWithOptions(addr, nil, 0, 0)

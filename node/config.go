@@ -13,8 +13,14 @@ type Config struct {
 	// 网络密码，用于验证节点是否属于同一网络
 	NetworkPassword string
 
-	// 本地监听端口，0表示自动分配
+	// UDP 监听端口，0表示自动分配
 	ListenPort int
+
+	// TCP 监听端口，0表示与 UDP 端口相同
+	TCPPort int
+
+	// KCP 监听端口，0表示 UDP 端口 + 1
+	KCPPort int
 
 	// 连接超时
 	DialTimeout time.Duration
@@ -67,6 +73,8 @@ func DefaultConfig() *Config {
 	return &Config{
 		NetworkPassword:   "",
 		ListenPort:        0,
+		TCPPort:           0, // 0 表示与 UDP 端口相同
+		KCPPort:           0, // 0 表示 UDP 端口 + 1
 		DialTimeout:       10 * time.Second,
 		HeartbeatInterval: 5 * time.Second,
 		HeartbeatTimeout:  30 * time.Second,
@@ -96,6 +104,12 @@ func (c *Config) Validate() error {
 	// 检查端口范围
 	if c.ListenPort < 0 || c.ListenPort > 65535 {
 		errs = append(errs, errors.New("ListenPort must be between 0 and 65535"))
+	}
+	if c.TCPPort < 0 || c.TCPPort > 65535 {
+		errs = append(errs, errors.New("TCPPort must be between 0 and 65535"))
+	}
+	if c.KCPPort < 0 || c.KCPPort > 65535 {
+		errs = append(errs, errors.New("KCPPort must be between 0 and 65535"))
 	}
 
 	// 检查超时配置
@@ -159,10 +173,26 @@ func WithNetworkPassword(password string) Option {
 	}
 }
 
-// WithListenPort 设置监听端口
+// WithListenPort 设置 UDP 监听端口
 func WithListenPort(port int) Option {
 	return func(c *Config) {
 		c.ListenPort = port
+	}
+}
+
+// WithTCPPort 设置 TCP 监听端口
+// 0 表示与 UDP 端口相同
+func WithTCPPort(port int) Option {
+	return func(c *Config) {
+		c.TCPPort = port
+	}
+}
+
+// WithKCPPort 设置 KCP 监听端口
+// 0 表示 UDP 端口 + 1（默认，因为 KCP 底层也是 UDP，无法与主 UDP socket 共用端口）
+func WithKCPPort(port int) Option {
+	return func(c *Config) {
+		c.KCPPort = port
 	}
 }
 

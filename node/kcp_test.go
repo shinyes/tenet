@@ -1,9 +1,29 @@
 package node
 
 import (
+	"fmt"
+	"net"
 	"testing"
 	"time"
 )
+
+// getConnectableAddr 将监听地址转换为可连接的地址
+// 例如 [::]:1234 或 0.0.0.0:1234 转换为 127.0.0.1:1234
+func getConnectableAddr(addr net.Addr) string {
+	tcpAddr, ok := addr.(*net.UDPAddr)
+	if ok {
+		return fmt.Sprintf("127.0.0.1:%d", tcpAddr.Port)
+	}
+	// 解析地址字符串
+	host, port, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		return fmt.Sprintf("127.0.0.1:%s", port)
+	}
+	return addr.String()
+}
 
 // TestDefaultKCPConfig 测试默认 KCP 配置
 func TestDefaultKCPConfig(t *testing.T) {
@@ -80,7 +100,7 @@ func TestKCPClientServer(t *testing.T) {
 	}
 	defer server.Close()
 
-	serverAddr := server.LocalAddr().String()
+	serverAddr := getConnectableAddr(server.LocalAddr())
 	t.Logf("服务端地址: %s", serverAddr)
 
 	// 用于接收结果
@@ -153,7 +173,7 @@ func TestKCPReliability(t *testing.T) {
 	}
 	defer server.Close()
 
-	serverAddr := server.LocalAddr().String()
+	serverAddr := getConnectableAddr(server.LocalAddr())
 
 	// 生成测试数据（256KB，减小以加快测试）
 	dataSize := 256 * 1024
@@ -257,7 +277,7 @@ func TestKCPMultipleMessages(t *testing.T) {
 	}
 	defer server.Close()
 
-	serverAddr := server.LocalAddr().String()
+	serverAddr := getConnectableAddr(server.LocalAddr())
 	messageCount := 50
 	messageSize := 100
 	expectedBytes := messageCount * messageSize

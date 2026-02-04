@@ -165,7 +165,9 @@ go build -o build\basic.exe .\examples\basic
 | 选项 | 说明 |
 |------|------|
 | `WithPassword(pwd)` | **必须**：网络密码（相同密码的节点才能互联） |
-| `WithListenPort(port)` | 监听端口（0 = 随机分配） |
+| `WithListenPort(port)` | UDP 监听端口（0 = 随机分配） |
+| `WithTCPPort(port)` | TCP 监听端口（0 = 与 UDP 端口相同） |
+| `WithKCPPort(port)` | KCP 监听端口（0 = UDP 端口 + 1） |
 | `WithEnableHolePunch(bool)` | 启用 NAT 打洞（默认开启） |
 | `WithEnableRelay(bool)` | 启用中继服务（默认开启） |
 | `WithRelayNodes(addrs)` | 预设中继节点地址（可选，已连接节点会自动注册为候选中继） |
@@ -174,6 +176,7 @@ go build -o build\basic.exe .\examples\basic
 | `WithHeartbeatTimeout(d)` | 心跳超时时间（默认 30 秒） |
 | `WithLogger(logger)` | 设置日志记录器（默认静默） |
 | `WithIdentityPath(path)` | 身份文件路径（持久化节点 ID） |
+| `WithEnableKCP(bool)` | 启用 KCP 可靠传输（默认开启） |
 | `WithEnableReconnect(bool)` | 启用自动重连（默认开启） |
 | `WithReconnectMaxRetries(n)` | 最大重连次数（默认 10，0=无限） |
 | `WithReconnectBackoff(init, max, mult)` | 重连退避参数 |

@@ -32,13 +32,8 @@ func NewKCPTransport(node *Node, config *KCPConfig) *KCPTransport {
 }
 
 // Start 启动 KCP 传输层
-// 在已有的 UDP 端口上复用 KCP
 func (t *KCPTransport) Start(port int) error {
-	// 使用独立的 KCP 端口（原端口 + 1）
-	// 这样可以避免与原始 UDP 握手冲突
-	kcpPort := port + 1
-
-	if err := t.manager.Listen(kcpPort); err != nil {
+	if err := t.manager.Listen(port); err != nil {
 		return fmt.Errorf("KCP 监听失败: %w", err)
 	}
 
@@ -134,8 +129,9 @@ func (t *KCPTransport) handleSession(session *KCPSession) {
 }
 
 // UpgradePeer 将对等节点升级到 KCP 传输
+// 注意：假设对方 KCP 端口为 UDP 端口 + 1（默认配置）
 func (t *KCPTransport) UpgradePeer(peerID string, remoteAddr *net.UDPAddr) error {
-	// 构建 KCP 地址（原端口 + 1）
+	// 默认配置下，KCP 端口 = UDP 端口 + 1
 	kcpAddr := fmt.Sprintf("%s:%d", remoteAddr.IP.String(), remoteAddr.Port+1)
 
 	session, err := t.manager.Dial(kcpAddr)

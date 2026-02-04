@@ -228,10 +228,26 @@ func WithPassword(password string) Option {
 	}
 }
 
-// WithListenPort 设置监听端口
+// WithListenPort 设置 UDP 监听端口
 func WithListenPort(port int) Option {
 	return func(c *tunnelConfig) {
 		c.nodeOpts = append(c.nodeOpts, node.WithListenPort(port))
+	}
+}
+
+// WithTCPPort 设置 TCP 监听端口
+// 0 表示与 UDP 端口相同（默认）
+func WithTCPPort(port int) Option {
+	return func(c *tunnelConfig) {
+		c.nodeOpts = append(c.nodeOpts, node.WithTCPPort(port))
+	}
+}
+
+// WithKCPPort 设置 KCP 监听端口
+// 0 表示 UDP 端口 + 1（默认）
+func WithKCPPort(port int) Option {
+	return func(c *tunnelConfig) {
+		c.nodeOpts = append(c.nodeOpts, node.WithKCPPort(port))
 	}
 }
 
