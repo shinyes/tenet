@@ -58,7 +58,7 @@ type NATProber struct {
 	mu sync.RWMutex
 
 	// 本地 UDP 连接（用于发送探测包）
-	conn *net.UDPConn
+	conn net.PacketConn
 
 	// 已知的探测结果缓存
 	cachedResult *ProbeResult
@@ -98,8 +98,10 @@ type probeRequestState struct {
 	respondedAt []time.Time
 }
 
+// ... (omitted types)
+
 // NewNATProber 创建 NAT 探测器
-func NewNATProber(conn *net.UDPConn) *NATProber {
+func NewNATProber(conn net.PacketConn) *NATProber {
 	prober := &NATProber{
 		conn:          conn,
 		pendingProbes: make(map[uint32]*pendingProbe),
@@ -165,8 +167,6 @@ func (p *NATProber) cleanupStaleProbes() {
 }
 
 // ProbeViaHelper 通过辅助节点探测本机 NAT 类型
-// helperAddrs: 辅助节点的多个端口地址（同一节点的不同端口）
-// 需要至少2个不同端口的辅助地址来判断 NAT 类型
 func (p *NATProber) ProbeViaHelper(helperAddrs []*net.UDPAddr) (*ProbeResult, error) {
 	if len(helperAddrs) < 1 {
 		return nil, fmt.Errorf("需要至少1个辅助节点地址")
@@ -195,7 +195,7 @@ func (p *NATProber) ProbeViaHelper(helperAddrs []*net.UDPAddr) (*ProbeResult, er
 	// 向所有辅助地址发送探测请求
 	packet := p.buildProbeRequest(requestID, len(helperAddrs))
 	for _, addr := range helperAddrs {
-		p.conn.WriteToUDP(packet, addr)
+		p.conn.WriteTo(packet, addr)
 	}
 
 	// 等待响应（超时或收到足够响应）
@@ -236,8 +236,8 @@ func (p *NATProber) analyzeResponses(responses []*ProbeResponse, helperAddrs []*
 
 	// 检查是否是公网IP（无NAT）
 	if p.conn.LocalAddr() != nil {
-		localAddr := p.conn.LocalAddr().(*net.UDPAddr)
-		if localAddr.IP.Equal(result.PublicAddr.IP) && localAddr.Port == result.PublicAddr.Port {
+		localAddr, ok := p.conn.LocalAddr().(*net.UDPAddr)
+		if ok && localAddr.IP.Equal(result.PublicAddr.IP) && localAddr.Port == result.PublicAddr.Port {
 			result.NATType = NATNone
 			return result, nil
 		}

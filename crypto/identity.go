@@ -141,17 +141,19 @@ func (i *Identity) SaveIdentity(path string) error {
 	return nil
 }
 
-// LoadIdentity 从文件加载身份
-// 从存储的 Ed25519 私钥派生所有其他密钥
-func LoadIdentity(path string) (*Identity, error) {
-	jsonData, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("读取身份文件失败: %w", err)
+// ToJSON 将身份序列化为 JSON 格式
+func (i *Identity) ToJSON() ([]byte, error) {
+	data := identityData{
+		PrivateKey: hex.EncodeToString(i.PrivateKey),
 	}
+	return json.MarshalIndent(data, "", "  ")
+}
 
+// IdentityFromJSON 从 JSON 数据恢复身份
+func IdentityFromJSON(jsonData []byte) (*Identity, error) {
 	var data identityData
 	if err := json.Unmarshal(jsonData, &data); err != nil {
-		return nil, fmt.Errorf("解析身份文件失败: %w", err)
+		return nil, fmt.Errorf("解析身份 JSON 失败: %w", err)
 	}
 
 	privKeyBytes, err := hex.DecodeString(data.PrivateKey)
@@ -164,6 +166,16 @@ func LoadIdentity(path string) (*Identity, error) {
 	}
 
 	return IdentityFromPrivateKey(ed25519.PrivateKey(privKeyBytes))
+}
+
+// LoadIdentity 从文件加载身份
+// 从存储的 Ed25519 私钥派生所有其他密钥
+func LoadIdentity(path string) (*Identity, error) {
+	jsonData, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取身份文件失败: %w", err)
+	}
+	return IdentityFromJSON(jsonData)
 }
 
 // LoadOrCreateIdentity 加载或创建身份

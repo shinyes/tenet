@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cykyes/tenet/crypto"
 	"github.com/cykyes/tenet/log"
 	"github.com/cykyes/tenet/node"
 )
@@ -26,6 +27,10 @@ func NewTunnel(opts ...Option) (*Tunnel, error) {
 
 	for _, opt := range opts {
 		opt(cfg)
+	}
+
+	if cfg.err != nil {
+		return nil, fmt.Errorf("配置错误: %w", cfg.err)
 	}
 
 	// 创建节点
@@ -143,6 +148,14 @@ func (t *Tunnel) GetMetrics() interface{} {
 	return t.node.GetMetrics()
 }
 
+// GetIdentityJSON 获取当前节点身份的 JSON 数据
+func (t *Tunnel) GetIdentityJSON() ([]byte, error) {
+	if t.node.Identity == nil {
+		return nil, fmt.Errorf("节点身份未初始化")
+	}
+	return t.node.Identity.ToJSON()
+}
+
 // ProbeNAT 探测本机 NAT 类型（需要至少一个已连接的节点）
 func (t *Tunnel) ProbeNAT() (string, error) {
 	result, err := t.node.ProbeNAT()
@@ -216,6 +229,7 @@ func (t *Tunnel) CancelAllReconnects() {
 
 type tunnelConfig struct {
 	nodeOpts []node.Option
+	err      error
 }
 
 // Option 配置选项
@@ -235,19 +249,18 @@ func WithListenPort(port int) Option {
 	}
 }
 
-// WithTCPPort 设置 TCP 监听端口
-// 0 表示与 UDP 端口相同（默认）
-func WithTCPPort(port int) Option {
+// WithIdentityJSON 设置节点身份（JSON 格式）
+func WithIdentityJSON(jsonData []byte) Option {
 	return func(c *tunnelConfig) {
-		c.nodeOpts = append(c.nodeOpts, node.WithTCPPort(port))
-	}
-}
-
-// WithKCPPort 设置 KCP 监听端口
-// 0 表示 UDP 端口 + 1（默认）
-func WithKCPPort(port int) Option {
-	return func(c *tunnelConfig) {
-		c.nodeOpts = append(c.nodeOpts, node.WithKCPPort(port))
+		if c.err != nil {
+			return
+		}
+		id, err := crypto.IdentityFromJSON(jsonData)
+		if err != nil {
+			c.err = fmt.Errorf("身份数据无效: %w", err)
+			return
+		}
+		c.nodeOpts = append(c.nodeOpts, node.WithIdentity(id))
 	}
 }
 
@@ -300,24 +313,6 @@ func WithLogger(logger log.Logger) Option {
 func WithEnableRelayAuth(enable bool) Option {
 	return func(c *tunnelConfig) {
 		c.nodeOpts = append(c.nodeOpts, node.WithEnableRelayAuth(enable))
-	}
-}
-
-// WithIdentityPath 设置身份文件路径
-// 如果路径非空，节点启动时会从该路径加载身份，若不存在则创建并保存
-// 这允许节点在重启后保持相同的 ID
-func WithIdentityPath(path string) Option {
-	return func(c *tunnelConfig) {
-		c.nodeOpts = append(c.nodeOpts, node.WithIdentityPath(path))
-	}
-}
-
-// WithEnableKCP 设置是否启用 KCP 可靠 UDP 传输
-// 默认启用，使用平衡模式（额外带宽消耗约 5-10%，延迟降低 30%）
-// 禁用后 UDP 传输不保证可靠性
-func WithEnableKCP(enable bool) Option {
-	return func(c *tunnelConfig) {
-		c.nodeOpts = append(c.nodeOpts, node.WithEnableKCP(enable))
 	}
 }
 

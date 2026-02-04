@@ -35,13 +35,13 @@ type HolePunchResult struct {
 
 // HolePuncher UDP打洞器
 type HolePuncher struct {
-	conn   *net.UDPConn
+	conn   net.PacketConn
 	config *HolePunchConfig
 	mu     sync.Mutex
 }
 
 // NewHolePuncher 创建打洞器
-func NewHolePuncher(conn *net.UDPConn, config *HolePunchConfig) *HolePuncher {
+func NewHolePuncher(conn net.PacketConn, config *HolePunchConfig) *HolePuncher {
 	if config == nil {
 		config = DefaultHolePunchConfig()
 	}
@@ -101,7 +101,7 @@ func (hp *HolePuncher) Punch(peerPublicAddr *net.UDPAddr, peerID []byte) (*HoleP
 			default:
 			}
 
-			n, addr, err := hp.conn.ReadFromUDP(buf)
+			n, addr, err := hp.conn.ReadFrom(buf)
 			if err != nil {
 				// 检查是否应该退出
 				select {
@@ -115,14 +115,19 @@ func (hp *HolePuncher) Punch(peerPublicAddr *net.UDPAddr, peerID []byte) (*HoleP
 					return
 				}
 			}
-			if addr == nil || !addr.IP.Equal(peerPublicAddr.IP) || addr.Port != peerPublicAddr.Port {
+			udpAddr, ok := addr.(*net.UDPAddr)
+			if !ok {
+				continue
+			}
+
+			if udpAddr == nil || !udpAddr.IP.Equal(peerPublicAddr.IP) || udpAddr.Port != peerPublicAddr.Port {
 				continue
 			}
 
 			// 验证是否是打洞响应
 			if n >= 4 && buf[0] == 0x50 && buf[1] == 0x4E && buf[2] == 0x43 && buf[3] == 0x48 {
 				select {
-				case receiveChan <- addr:
+				case receiveChan <- udpAddr:
 				default:
 				}
 				return
@@ -133,7 +138,7 @@ func (hp *HolePuncher) Punch(peerPublicAddr *net.UDPAddr, peerID []byte) (*HoleP
 	// 发送打洞包
 	startTime := time.Now()
 	for i := 0; i < hp.config.Attempts; i++ {
-		_, err := hp.conn.WriteToUDP(punchPacket, peerPublicAddr)
+		_, err := hp.conn.WriteTo(punchPacket, peerPublicAddr)
 		if err != nil {
 			return nil, fmt.Errorf("发送打洞包失败: %w", err)
 		}
@@ -186,7 +191,7 @@ func (hp *HolePuncher) PunchWithRetry(peerPublicAddr *net.UDPAddr, peerID []byte
 // SimultaneousPunch 同时打洞（需要信令协调）
 // 双方需要在约定的时间同时开始打洞
 type PunchCoordinator struct {
-	conn         *net.UDPConn
+	conn         net.PacketConn
 	config       *HolePunchConfig
 	puncher      *HolePuncher
 	startTime    time.Time
@@ -194,7 +199,7 @@ type PunchCoordinator struct {
 }
 
 // NewPunchCoordinator 创建打洞协调器
-func NewPunchCoordinator(conn *net.UDPConn) *PunchCoordinator {
+func NewPunchCoordinator(conn net.PacketConn) *PunchCoordinator {
 	return &PunchCoordinator{
 		conn:         conn,
 		config:       DefaultHolePunchConfig(),

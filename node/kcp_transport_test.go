@@ -12,28 +12,21 @@ func TestKCPTransportBasic(t *testing.T) {
 	node, err := NewNode(
 		WithNetworkPassword("test"),
 		WithListenPort(0),
-		WithEnableKCP(false), // 手动管理 KCP
 	)
 	if err != nil {
 		t.Fatalf("创建节点失败: %v", err)
 	}
+	// 启动节点（会自动启动 KCP 传输层）
 	if err := node.Start(); err != nil {
 		t.Fatalf("启动节点失败: %v", err)
 	}
 	defer node.Stop()
 
-	// 创建 KCP 传输层
-	transport := NewKCPTransport(node, DefaultKCPConfig())
+	// 验证 KCP 传输层已自动初始化
+	transport := node.kcpTransport
 	if transport == nil {
-		t.Fatal("NewKCPTransport 返回 nil")
+		t.Fatal("node.kcpTransport 为 nil，应该自动初始化")
 	}
-
-	// 启动传输层（使用 UDP 端口 + 1，避免与 UDP socket 冲突）
-	err = transport.Start(node.LocalAddr.Port + 1)
-	if err != nil {
-		t.Fatalf("启动 KCP 传输层失败: %v", err)
-	}
-	defer transport.Close()
 
 	// 验证地址
 	addr := transport.LocalAddr()

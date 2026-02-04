@@ -5,6 +5,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/cykyes/tenet/crypto" // Added crypto import
 	"github.com/cykyes/tenet/log"
 )
 
@@ -15,12 +16,6 @@ type Config struct {
 
 	// UDP 监听端口，0表示自动分配
 	ListenPort int
-
-	// TCP 监听端口，0表示与 UDP 端口相同
-	TCPPort int
-
-	// KCP 监听端口，0表示 UDP 端口 + 1
-	KCPPort int
 
 	// 连接超时
 	DialTimeout time.Duration
@@ -52,11 +47,8 @@ type Config struct {
 	// 中继认证令牌有效期
 	RelayAuthTTL time.Duration
 
-	// 身份文件路径，为空则每次生成新身份
-	IdentityPath string
-
-	// 是否启用 KCP 可靠 UDP 传输
-	EnableKCP bool
+	// 身份信息
+	Identity *crypto.Identity
 
 	// KCP 配置（nil 则使用默认平衡模式）
 	KCPConfig *KCPConfig
@@ -71,10 +63,9 @@ type Config struct {
 // DefaultConfig 返回默认配置
 func DefaultConfig() *Config {
 	return &Config{
-		NetworkPassword:   "",
-		ListenPort:        0,
-		TCPPort:           0, // 0 表示与 UDP 端口相同
-		KCPPort:           0, // 0 表示 UDP 端口 + 1
+		NetworkPassword: "",
+		ListenPort:      0,
+
 		DialTimeout:       10 * time.Second,
 		HeartbeatInterval: 5 * time.Second,
 		HeartbeatTimeout:  30 * time.Second,
@@ -85,10 +76,10 @@ func DefaultConfig() *Config {
 		Logger:            log.Nop(),
 		EnableRelayAuth:   true,
 		RelayAuthTTL:      5 * time.Minute,
-		EnableKCP:         true, // 默认启用 KCP 可靠传输
-		KCPConfig:         nil,  // 使用默认平衡模式
-		EnableReconnect:   true, // 默认启用自动重连
-		ReconnectConfig:   nil,  // 使用默认重连配置
+
+		KCPConfig:       nil,  // 使用默认平衡模式
+		EnableReconnect: true, // 默认启用自动重连
+		ReconnectConfig: nil,  // 使用默认重连配置
 	}
 }
 
@@ -104,12 +95,6 @@ func (c *Config) Validate() error {
 	// 检查端口范围
 	if c.ListenPort < 0 || c.ListenPort > 65535 {
 		errs = append(errs, errors.New("ListenPort must be between 0 and 65535"))
-	}
-	if c.TCPPort < 0 || c.TCPPort > 65535 {
-		errs = append(errs, errors.New("TCPPort must be between 0 and 65535"))
-	}
-	if c.KCPPort < 0 || c.KCPPort > 65535 {
-		errs = append(errs, errors.New("KCPPort must be between 0 and 65535"))
 	}
 
 	// 检查超时配置
@@ -180,22 +165,6 @@ func WithListenPort(port int) Option {
 	}
 }
 
-// WithTCPPort 设置 TCP 监听端口
-// 0 表示与 UDP 端口相同
-func WithTCPPort(port int) Option {
-	return func(c *Config) {
-		c.TCPPort = port
-	}
-}
-
-// WithKCPPort 设置 KCP 监听端口
-// 0 表示 UDP 端口 + 1（默认，因为 KCP 底层也是 UDP，无法与主 UDP socket 共用端口）
-func WithKCPPort(port int) Option {
-	return func(c *Config) {
-		c.KCPPort = port
-	}
-}
-
 // WithDialTimeout 设置连接超时
 func WithDialTimeout(timeout time.Duration) Option {
 	return func(c *Config) {
@@ -261,18 +230,10 @@ func WithRelayAuthTTL(ttl time.Duration) Option {
 	}
 }
 
-// WithIdentityPath 设置身份文件路径
-// 如果路径非空，节点启动时会从该路径加载身份，若不存在则创建并保存
-func WithIdentityPath(path string) Option {
+// WithIdentity 设置节点身份
+func WithIdentity(identity *crypto.Identity) Option {
 	return func(c *Config) {
-		c.IdentityPath = path
-	}
-}
-
-// WithEnableKCP 设置是否启用 KCP 可靠 UDP 传输
-func WithEnableKCP(enable bool) Option {
-	return func(c *Config) {
-		c.EnableKCP = enable
+		c.Identity = identity
 	}
 }
 

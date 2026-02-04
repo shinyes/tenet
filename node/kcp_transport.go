@@ -7,6 +7,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/cykyes/tenet/transport"
 )
 
 // KCPTransport 封装 KCP 作为可靠传输层
@@ -14,26 +16,29 @@ import (
 type KCPTransport struct {
 	manager  *KCPManager
 	node     *Node
+	mux      *transport.UDPMux
 	sessions sync.Map // peerID -> *KCPSession
 	closing  chan struct{}
 	wg       sync.WaitGroup
 }
 
 // NewKCPTransport 创建 KCP 传输层
-func NewKCPTransport(node *Node, config *KCPConfig) *KCPTransport {
+func NewKCPTransport(node *Node, config *KCPConfig, mux *transport.UDPMux) *KCPTransport {
 	if config == nil {
 		config = DefaultKCPConfig()
 	}
 	return &KCPTransport{
 		manager: NewKCPManager(config),
 		node:    node,
+		mux:     mux,
 		closing: make(chan struct{}),
 	}
 }
 
 // Start 启动 KCP 传输层
-func (t *KCPTransport) Start(port int) error {
-	if err := t.manager.Listen(port); err != nil {
+// 注意：不再需要传递端口，因为复用了 Node 的 UDP 连接
+func (t *KCPTransport) Start() error {
+	if err := t.manager.ListenOnConn(t.mux.GetKCPConn()); err != nil {
 		return fmt.Errorf("KCP 监听失败: %w", err)
 	}
 
@@ -129,13 +134,15 @@ func (t *KCPTransport) handleSession(session *KCPSession) {
 }
 
 // UpgradePeer 将对等节点升级到 KCP 传输
-// 注意：假设对方 KCP 端口为 UDP 端口 + 1（默认配置）
 func (t *KCPTransport) UpgradePeer(peerID string, remoteAddr *net.UDPAddr) error {
-	// 默认配置下，KCP 端口 = UDP 端口 + 1
-	kcpAddr := fmt.Sprintf("%s:%d", remoteAddr.IP.String(), remoteAddr.Port+1)
+	remoteAddrStr := remoteAddr.String()
 
-	session, err := t.manager.Dial(kcpAddr)
+	// 注册特定地址处理器，确保 Dial 的响应能回到这里
+	handler := t.mux.RegisterKCPHandler(remoteAddrStr)
+
+	session, err := t.manager.DialWithConn(remoteAddrStr, handler)
 	if err != nil {
+		t.mux.UnregisterKCPHandler(remoteAddrStr)
 		return fmt.Errorf("KCP 连接失败: %w", err)
 	}
 
@@ -175,7 +182,11 @@ func (t *KCPTransport) HasSession(peerID string) bool {
 func (t *KCPTransport) RemoveSession(peerID string) {
 	if sessionI, ok := t.sessions.LoadAndDelete(peerID); ok {
 		session := sessionI.(*KCPSession)
+		raddr := session.RemoteAddr().String()
 		session.Close()
+
+		// 注销 Mux 上的处理器
+		t.mux.UnregisterKCPHandler(raddr)
 	}
 }
 
@@ -198,7 +209,9 @@ func (t *KCPTransport) Close() error {
 	// 关闭所有会话
 	t.sessions.Range(func(key, value interface{}) bool {
 		session := value.(*KCPSession)
+		raddr := session.RemoteAddr().String()
 		session.Close()
+		t.mux.UnregisterKCPHandler(raddr)
 		t.sessions.Delete(key)
 		return true
 	})

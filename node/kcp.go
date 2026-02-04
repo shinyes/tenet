@@ -78,8 +78,8 @@ func NewKCPManager(config *KCPConfig) *KCPManager {
 
 // Listen 在指定端口监听 KCP 连接
 func (m *KCPManager) Listen(port int) error {
-	// 明确使用 IPv4 所有接口，避免 Windows 上的 IPv6 兼容性问题
-	addr := fmt.Sprintf("0.0.0.0:%d", port)
+	// 使用 [::] 以支持双栈 (IPv4 + IPv6)
+	addr := fmt.Sprintf("[::]:%d", port)
 
 	// 使用无 FEC 的 KCP（我们已经有 Noise 加密）
 	listener, err := kcp.ListenWithOptions(addr, nil, 0, 0)
@@ -107,6 +107,7 @@ func (m *KCPManager) Listen(port int) error {
 func (m *KCPManager) ListenOnConn(conn net.PacketConn) error {
 	listener, err := kcp.ServeConn(nil, 0, 0, conn)
 	if err != nil {
+		fmt.Printf("DEBUG: ServeConn failed: %v\n", err)
 		return err
 	}
 
@@ -114,12 +115,10 @@ func (m *KCPManager) ListenOnConn(conn net.PacketConn) error {
 
 	// 应用缓冲区配置
 	if err := listener.SetReadBuffer(4 * 1024 * 1024); err != nil {
-		listener.Close()
-		return err
+		fmt.Printf("WARNING: SetReadBuffer failed: %v\n", err)
 	}
 	if err := listener.SetWriteBuffer(4 * 1024 * 1024); err != nil {
-		listener.Close()
-		return err
+		fmt.Printf("WARNING: SetWriteBuffer failed: %v\n", err)
 	}
 
 	return nil
@@ -200,6 +199,35 @@ func (m *KCPManager) DialWithLocalAddr(localAddr, remoteAddr string) (*KCPSessio
 	session, err := kcp.NewConn(remoteAddr, nil, 0, 0, &connWrapper{conn})
 	if err != nil {
 		conn.Close()
+		return nil, err
+	}
+
+	// 应用平衡模式配置
+	m.configureSession(session)
+
+	kcpSession := &KCPSession{
+		session:  session,
+		peerAddr: raddr,
+		config:   m.config,
+	}
+
+	m.mu.Lock()
+	m.sessions[raddr.String()] = kcpSession
+	m.mu.Unlock()
+
+	return kcpSession, nil
+}
+
+// DialWithConn 使用提供的 PacketConn 连接远程 KCP 节点
+func (m *KCPManager) DialWithConn(remoteAddr string, conn net.PacketConn) (*KCPSession, error) {
+	raddr, err := net.ResolveUDPAddr("udp", remoteAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	// 使用提供的连接创建 KCP 会话
+	session, err := kcp.NewConn(remoteAddr, nil, 0, 0, conn)
+	if err != nil {
 		return nil, err
 	}
 

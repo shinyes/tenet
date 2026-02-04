@@ -39,7 +39,7 @@ func (m *RelayMetrics) Score() float64 {
 
 // RelayManager 中继管理器
 type RelayManager struct {
-	conn          *net.UDPConn
+	conn          net.PacketConn
 	relays        map[string]*RelayInfo
 	relayMetrics  map[string]*RelayMetrics
 	activeRelays  map[string]bool // 活跃的中继会话
@@ -48,7 +48,7 @@ type RelayManager struct {
 }
 
 // NewRelayManager 创建中继管理器
-func NewRelayManager(conn *net.UDPConn) *RelayManager {
+func NewRelayManager(conn net.PacketConn) *RelayManager {
 	return &RelayManager{
 		conn:          conn,
 		relays:        make(map[string]*RelayInfo),
@@ -123,49 +123,31 @@ func (rm *RelayManager) ProbeRelay(relay *RelayInfo) (*RelayMetrics, error) {
 	startTime := time.Now()
 
 	// 发送探测包
+	// 发送探测包
 	probePacket := []byte{0x50, 0x52, 0x4F, 0x42, 0x45} // "PROBE"
-	// Prefer a dedicated socket to avoid interfering with shared reads
-	if probeConn, dialErr := net.DialUDP("udp", nil, relay.Addr); dialErr == nil {
-		defer probeConn.Close()
-		probeConn.SetDeadline(time.Now().Add(5 * time.Second))
 
-		if _, err := probeConn.Write(probePacket); err != nil {
-			return nil, fmt.Errorf("发送探测包失败: %w", err)
-		}
+	// 使用临时 Socket 进行探测，避免与主 Listener 冲突
+	probeConn, err := net.DialUDP("udp", nil, relay.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("创建探测连接失败: %w", err)
+	}
+	defer probeConn.Close()
 
-		buf := make([]byte, 64)
-		for {
-			n, readErr := probeConn.Read(buf)
-			if readErr != nil {
-				return nil, fmt.Errorf("接收探测响应失败: %w", readErr)
-			}
-			if n < 5 || string(buf[:5]) != "PROBE" {
-				continue
-			}
-			break
-		}
-	} else {
-		_, err := rm.conn.WriteToUDP(probePacket, relay.Addr)
+	if err := probeConn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return nil, fmt.Errorf("设置超时失败: %w", err)
+	}
+
+	if _, err := probeConn.Write(probePacket); err != nil {
+		return nil, fmt.Errorf("发送探测包失败: %w", err)
+	}
+
+	buf := make([]byte, 64)
+	for {
+		n, err := probeConn.Read(buf)
 		if err != nil {
-			return nil, fmt.Errorf("发送探测包失败: %w", err)
+			return nil, fmt.Errorf("接收探测响应失败: %w", err)
 		}
-
-		// 等待响应
-		rm.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-		defer rm.conn.SetReadDeadline(time.Time{})
-
-		buf := make([]byte, 64)
-		for {
-			n, fromAddr, readErr := rm.conn.ReadFromUDP(buf)
-			if readErr != nil {
-				return nil, fmt.Errorf("接收探测响应失败: %w", readErr)
-			}
-			if fromAddr == nil || !fromAddr.IP.Equal(relay.Addr.IP) || fromAddr.Port != relay.Addr.Port {
-				continue
-			}
-			if n < 5 || string(buf[:5]) != "PROBE" {
-				continue
-			}
+		if n >= 5 && string(buf[:5]) == "PROBE" {
 			break
 		}
 	}
@@ -237,6 +219,6 @@ func DecodeRelayPacket(packet []byte) (*RelayPacket, error) {
 // RelayThrough 通过指定节点中继数据
 func (rm *RelayManager) RelayThrough(relay *RelayInfo, srcID, dstID [16]byte, data []byte) error {
 	packet := EncodeRelayPacket(srcID, dstID, data)
-	_, err := rm.conn.WriteToUDP(packet, relay.Addr)
+	_, err := rm.conn.WriteTo(packet, relay.Addr)
 	return err
 }

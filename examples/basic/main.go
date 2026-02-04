@@ -46,6 +46,7 @@ func main() {
 	password := flag.String("secret", "", "网络密码（相同密码的节点可以互联）")
 	connect := flag.String("p", "", "要连接的节点地址（host:port）")
 	relays := flag.String("relay", "", "中继节点列表（逗号分隔 host:port）")
+	identityFile := flag.String("id", "identity.json", "身份文件路径")
 	verbose := flag.Bool("v", false, "启用详细日志输出")
 	flag.Parse()
 
@@ -78,6 +79,19 @@ func main() {
 				clean = append(clean, v)
 			}
 		}
+		// 加载身份
+		if *identityFile != "" {
+			data, err := os.ReadFile(*identityFile)
+			if err == nil {
+				fmt.Printf("加载身份文件: %s\n", *identityFile)
+				opts = append(opts, api.WithIdentityJSON(data))
+			} else if !os.IsNotExist(err) {
+				fmt.Printf("读取身份文件失败: %v\n", err)
+			}
+		} else {
+			fmt.Println("未指定身份文件，将生成临时身份")
+		}
+
 		if len(clean) > 0 {
 			opts = append(opts, api.WithRelayNodes(clean))
 		}
@@ -150,6 +164,20 @@ func main() {
 	if *password != "" {
 		fmt.Printf("网络密码: %s\n", *password)
 	}
+	// 保存身份（如果是新生成的）
+	if *identityFile != "" {
+		if _, err := os.Stat(*identityFile); os.IsNotExist(err) {
+			jsonBytes, err := tunnel.GetIdentityJSON()
+			if err == nil {
+				if err := os.WriteFile(*identityFile, jsonBytes, 0600); err == nil {
+					fmt.Printf("身份已保存至: %s\n", *identityFile)
+				} else {
+					fmt.Printf("保存身份失败: %v\n", err)
+				}
+			}
+		}
+	}
+
 	fmt.Println()
 
 	// 如果指定了连接目标，尝试连接

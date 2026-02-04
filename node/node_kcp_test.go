@@ -13,7 +13,7 @@ func TestNodeWithKCP(t *testing.T) {
 	node1, err := NewNode(
 		WithNetworkPassword("test-secret"),
 		WithListenPort(0),
-		WithEnableKCP(true),
+		WithListenPort(0),
 	)
 	if err != nil {
 		t.Fatalf("创建节点1失败: %v", err)
@@ -22,7 +22,7 @@ func TestNodeWithKCP(t *testing.T) {
 	node2, err := NewNode(
 		WithNetworkPassword("test-secret"),
 		WithListenPort(0),
-		WithEnableKCP(true),
+		WithListenPort(0),
 	)
 	if err != nil {
 		t.Fatalf("创建节点2失败: %v", err)
@@ -101,7 +101,7 @@ func TestNodeKCPReliableTransfer(t *testing.T) {
 	node1, err := NewNode(
 		WithNetworkPassword("test-secret"),
 		WithListenPort(0),
-		WithEnableKCP(false), // 禁用 KCP 以简化测试
+		WithListenPort(0),
 	)
 	if err != nil {
 		t.Fatalf("创建节点1失败: %v", err)
@@ -110,7 +110,7 @@ func TestNodeKCPReliableTransfer(t *testing.T) {
 	node2, err := NewNode(
 		WithNetworkPassword("test-secret"),
 		WithListenPort(0),
-		WithEnableKCP(false),
+		WithListenPort(0),
 	)
 	if err != nil {
 		t.Fatalf("创建节点2失败: %v", err)
@@ -200,89 +200,6 @@ func TestNodeKCPReliableTransfer(t *testing.T) {
 	}
 }
 
-// TestNodeKCPDisabled 测试禁用 KCP 后使用原始 UDP
-func TestNodeKCPDisabled(t *testing.T) {
-	// 创建两个节点，禁用 KCP
-	node1, err := NewNode(
-		WithNetworkPassword("test-secret"),
-		WithListenPort(0),
-		WithEnableKCP(false),
-	)
-	if err != nil {
-		t.Fatalf("创建节点1失败: %v", err)
-	}
-
-	node2, err := NewNode(
-		WithNetworkPassword("test-secret"),
-		WithListenPort(0),
-		WithEnableKCP(false),
-	)
-	if err != nil {
-		t.Fatalf("创建节点2失败: %v", err)
-	}
-
-	if err := node1.Start(); err != nil {
-		t.Fatalf("启动节点1失败: %v", err)
-	}
-	defer node1.Stop()
-
-	if err := node2.Start(); err != nil {
-		t.Fatalf("启动节点2失败: %v", err)
-	}
-	defer node2.Stop()
-
-	// 验证 KCP 传输层未启动
-	if node1.kcpTransport != nil {
-		t.Error("节点1 的 KCP 应该为 nil")
-	}
-	if node2.kcpTransport != nil {
-		t.Error("节点2 的 KCP 应该为 nil")
-	}
-
-	// 设置接收回调
-	received := make(chan string, 1)
-	node2.OnReceive(func(peerID string, data []byte) {
-		received <- string(data)
-	})
-
-	// 连接
-	connected := make(chan struct{})
-	node1.OnPeerConnected(func(peerID string) {
-		close(connected)
-	})
-
-	addr := fmt.Sprintf("127.0.0.1:%d", node2.LocalAddr.Port)
-	if err := node1.Connect(addr); err != nil {
-		t.Fatalf("连接失败: %v", err)
-	}
-
-	select {
-	case <-connected:
-	case <-time.After(5 * time.Second):
-		t.Fatal("连接超时")
-	}
-
-	peers := node1.Peers.IDs()
-	peerID := peers[0]
-
-	// 发送消息
-	testMsg := "Hello via raw UDP!"
-	if err := node1.Send(peerID, []byte(testMsg)); err != nil {
-		t.Fatalf("发送失败: %v", err)
-	}
-
-	select {
-	case msg := <-received:
-		if msg != testMsg {
-			t.Errorf("消息不匹配: 期望 %q，实际 %q", testMsg, msg)
-		} else {
-			t.Logf("通过原始 UDP 成功收到消息: %s", msg)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("接收超时")
-	}
-}
-
 // TestNodeKCPCustomConfig 测试自定义 KCP 配置
 func TestNodeKCPCustomConfig(t *testing.T) {
 	// 使用极速模式配置
@@ -300,7 +217,7 @@ func TestNodeKCPCustomConfig(t *testing.T) {
 	node1, err := NewNode(
 		WithNetworkPassword("test-secret"),
 		WithListenPort(0),
-		WithEnableKCP(true),
+		WithListenPort(0),
 		WithKCPConfig(fastConfig),
 	)
 	if err != nil {
@@ -333,12 +250,12 @@ func BenchmarkNodeSend(b *testing.B) {
 	node1, _ := NewNode(
 		WithNetworkPassword("bench-secret"),
 		WithListenPort(0),
-		WithEnableKCP(true),
+		WithListenPort(0),
 	)
 	node2, _ := NewNode(
 		WithNetworkPassword("bench-secret"),
 		WithListenPort(0),
-		WithEnableKCP(true),
+		WithListenPort(0),
 	)
 
 	node1.Start()

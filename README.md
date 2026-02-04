@@ -9,13 +9,15 @@
 - 🕳️ **NAT 穿透**：支持 TCP (Simultaneous Open) 与 UDP 并行打洞，智能选择最佳链路
 - ⚡ **TCP 优先**：UDP 快速握手后自动升级至抗 QoS 的 TCP 通道
 - 🔄 **自动中继**：打洞失败时自动选择延迟最低的节点进行中继传输
-- 🌐 **节点发现**：新节点连接后自动介绍给网络中的其他节点
+- 🛣️ **多路复用**：KCP、NAT 打洞与 TENT 协议共享单一 UDP 端口 (Single Socket)
+- 🌐 **IPv6 双栈**：支持 IPv4/IPv6 双栈监听与连接
+- 🔍 **节点发现**：新节点连接后自动介绍给网络中的其他节点
 - 🔍 **NAT 类型探测**：无需外部 STUN 服务器，通过已连接节点探测 NAT 类型
 - 💓 **心跳保活**：定期心跳检测连接状态，超时自动断开
 - 🔁 **自动重连**：断线后自动重连，支持指数退避和回调通知
 - 🛡️ **中继认证**：中继转发需要认证（Ed25519/HMAC），防止滥用
 - 📊 **指标监控**：内置连接、流量、打洞成功率、重连等统计
-- 🚀 **KCP 可靠传输**：可选的 KCP 协议层，提供可靠 UDP 传输
+- 🚀 **KCP 可靠传输**：内置 KCP 协议层，提供低延迟可靠 UDP 传输
 - 🌍 **跨平台**：支持 Windows、Linux、macOS、Android
 
 ## 快速开始
@@ -165,9 +167,8 @@ go build -o build\basic.exe .\examples\basic
 | 选项 | 说明 |
 |------|------|
 | `WithPassword(pwd)` | **必须**：网络密码（相同密码的节点才能互联） |
-| `WithListenPort(port)` | UDP 监听端口（0 = 随机分配） |
-| `WithTCPPort(port)` | TCP 监听端口（0 = 与 UDP 端口相同） |
-| `WithKCPPort(port)` | KCP 监听端口（0 = UDP 端口 + 1） |
+| `WithListenPort(port)` | 监听端口 (UDP/TCP 复用, 0 = 随机分配) |
+
 | `WithEnableHolePunch(bool)` | 启用 NAT 打洞（默认开启） |
 | `WithEnableRelay(bool)` | 启用中继服务（默认开启） |
 | `WithRelayNodes(addrs)` | 预设中继节点地址（可选，已连接节点会自动注册为候选中继） |
@@ -175,8 +176,7 @@ go build -o build\basic.exe .\examples\basic
 | `WithHeartbeatInterval(d)` | 心跳发送间隔（默认 5 秒） |
 | `WithHeartbeatTimeout(d)` | 心跳超时时间（默认 30 秒） |
 | `WithLogger(logger)` | 设置日志记录器（默认静默） |
-| `WithIdentityPath(path)` | 身份文件路径（持久化节点 ID） |
-| `WithEnableKCP(bool)` | 启用 KCP 可靠传输（默认开启） |
+| `WithIdentityJSON(json)` | 设置节点身份（可从 GetIdentityJSON 获取） |
 | `WithEnableReconnect(bool)` | 启用自动重连（默认开启） |
 | `WithReconnectMaxRetries(n)` | 最大重连次数（默认 10，0=无限） |
 | `WithReconnectBackoff(init, max, mult)` | 重连退避参数 |
@@ -250,7 +250,12 @@ tenet/
 
 ### 连接流程
 
-1. **启动**：同时监听 UDP 和 TCP 端口（使用 `SO_REUSEADDR` 共享端口）
+### 连接流程
+
+1. **启动**：
+   - 监听单一端口 (IPv4/IPv6 双栈)
+   - 启用 UDP 多路复用 (UDPMux)，同时处理 KCP、打洞和控制协议
+   - TCP 自动绑定到相同端口
 2. **连接**：可主动连接其他节点，也可等待其他节点来连接
 3. **打洞**：
    - 同时尝试 **UDP 打洞** 和 **TCP Simultaneous Open**
@@ -258,7 +263,7 @@ tenet/
 4. **握手**：使用 Noise Protocol (XX 模式) 进行双向身份验证
    - 密码作为 Prologue 参与认证，密码不同则握手失败
 5. **传输升级**：
-   - UDP 握手成功后，后台继续尝试 TCP
+   - KCP 提供快速可靠的 UDP 传输
    - TCP 握手成功后，自动升级至 TCP 通道（抗 QoS）
 6. **中继回退**：打洞失败时，选择延迟最低的已连接节点进行中继
 7. **节点发现**：新节点连接后自动交换已知节点列表
