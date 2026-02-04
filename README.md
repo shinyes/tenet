@@ -168,7 +168,7 @@ go build -o build\basic.exe .\examples\basic
 | `WithListenPort(port)` | 监听端口（0 = 随机分配） |
 | `WithEnableHolePunch(bool)` | 启用 NAT 打洞（默认开启） |
 | `WithEnableRelay(bool)` | 启用中继服务（默认开启） |
-| `WithRelayNodes(addrs)` | 预设中继节点地址列表 |
+| `WithRelayNodes(addrs)` | 预设中继节点地址（可选，已连接节点会自动注册为候选中继） |
 | `WithMaxPeers(n)` | 最大连接数（默认 50） |
 | `WithHeartbeatInterval(d)` | 心跳发送间隔（默认 5 秒） |
 | `WithHeartbeatTimeout(d)` | 心跳超时时间（默认 30 秒） |
