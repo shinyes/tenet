@@ -58,6 +58,11 @@ type Config struct {
 
 	// 重连配置（nil 则使用默认配置）
 	ReconnectConfig *ReconnectConfig
+
+	// 频道列表 (可选)
+	// 存储已订阅频道的名称（字符串）
+	// 注意：传输时会使用 Hash(ChannelName) 作为 ID
+	Channels []string
 }
 
 // DefaultConfig 返回默认配置
@@ -277,5 +282,17 @@ func WithReconnectBackoff(initialDelay, maxDelay time.Duration, multiplier float
 		c.ReconnectConfig.InitialDelay = initialDelay
 		c.ReconnectConfig.MaxDelay = maxDelay
 		c.ReconnectConfig.BackoffMultiplier = multiplier
+	}
+}
+
+// WithChannelID 添加频道（支持多次调用添加多个频道）
+func WithChannelID(channelName string) Option {
+	return func(c *Config) {
+		for _, ch := range c.Channels {
+			if ch == channelName {
+				return // 已存在，去重
+			}
+		}
+		c.Channels = append(c.Channels, channelName)
 	}
 }

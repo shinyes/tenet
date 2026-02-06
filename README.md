@@ -8,7 +8,8 @@
 - 🆔 **灵活身份**：支持 JSON 格式的可移植身份凭证
 - 🔒 **端到端加密**：使用 Noise Protocol 框架（与 WireGuard 相同）
 - 🔑 **密码组网**：相同密码的节点自动组成私有网络（密码必须配置）
-- 🕳️ **NAT 穿透**：支持 TCP (Simultaneous Open) 与 UDP 并行打洞，智能选择最佳链路
+- � **多频道隐私**：支持多频道订阅，频道名哈希隐藏，实现“暗网”式隔离
+- �🕳️ **NAT 穿透**：支持 TCP (Simultaneous Open) 与 UDP 并行打洞，智能选择最佳链路
 - ⚡ **TCP 优先**：UDP 快速握手后自动升级至抗 QoS 的 TCP 通道
 - 🔄 **自动中继**：打洞失败时自动选择延迟最低的节点进行中继传输
 - 🛣️ **多路复用**：KCP、NAT 打洞与 TENT 协议共享单一 UDP 端口 (Single Socket)
@@ -102,26 +103,26 @@ func main() {
 
 **节点 A**（等待连接）:
 ```bash
-go run examples/basic/main.go -l 1231 -secret "mysecret"
+go run examples/basic/main.go -l 1231 -s "mysecret" -channel ops
 ```
 
 **节点 B**（主动连接节点 A）:
 ```bash
-go run examples/basic/main.go -l 1232 -secret "mysecret" -p "127.0.0.1:1231"
+go run examples/basic/main.go -l 1232 -s "mysecret" -channel ops -connect "127.0.0.1:1231"
 ```
 
-**启用详细日志**（添加 `-v` 参数）:
+**启用详细日志**（添加 `-d` 参数）:
 ```bash
-go run examples/basic/main.go -l 1232 -secret "mysecret" -p "127.0.0.1:1231" -v
+go run examples/basic/main.go -l 1232 -s "mysecret" -channel dev -connect "127.0.0.1:1231" -d
 ```
 
 **配置中继节点**:
 ```bash
 # 中继服务器（开启中继服务供其他节点使用）
-go run examples/basic/main.go -l 9000 -secret "mysecret"
+go run examples/basic/main.go -l 9000 -s "mysecret"
 
 # 普通节点（指定中继节点地址，打洞失败时自动使用）
-go run examples/basic/main.go -l 1232 -secret "mysecret" -relay "1.2.3.4:9000"
+go run examples/basic/main.go -l 1232 -s "mysecret" -channel ops -relay "1.2.3.4:9000"
 ```
 > 所有节点默认启用中继功能。当两个节点无法直连时，会自动通过已连接的中继节点进行数据转发，并优先选择延迟最低的节点。
 
@@ -156,6 +157,7 @@ go run examples/basic/main.go -l 1232 -secret "mysecret" -relay "1.2.3.4:9000"
 | `PeerTransport(peerID)` | 获取传输协议（tcp/udp） |
 | `PeerLinkMode(peerID)` | 获取链路模式（p2p/relay） |
 | `ProbeNAT()` | 探测本机 NAT 类型 |
+| `GetNATType()` | 获取已探测的 NAT 类型 |
 | `GetMetrics()` | 获取指标快照 |
 
 ### 配置选项
@@ -163,8 +165,8 @@ go run examples/basic/main.go -l 1232 -secret "mysecret" -relay "1.2.3.4:9000"
 | 选项 | 说明 |
 |------|------|
 | `WithPassword(pwd)` | **必须**：网络密码（相同密码的节点才能互联） |
+| `WithChannelID(name)` | 加入指定频道（可多次调用以加入多个频道） |
 | `WithListenPort(port)` | 监听端口 (UDP/TCP 复用, 0 = 随机分配) |
-
 | `WithEnableHolePunch(bool)` | 启用 NAT 打洞（默认开启） |
 | `WithEnableRelay(bool)` | 启用中继服务（默认开启） |
 | `WithRelayNodes(addrs)` | 预设中继节点地址（可选，已连接节点会自动注册为候选中继） |

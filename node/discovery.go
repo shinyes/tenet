@@ -8,7 +8,7 @@ import (
 
 // sendDiscoveryRequest 向指定节点发送节点发现请求
 func (n *Node) sendDiscoveryRequest(p *peer.Peer) {
-	// 构建发现请求包：TENT + 0x04 + 空payload
+	// 构建发现请求包：TENT + 0x04 (无 Payload)
 	packet := make([]byte, 5)
 	copy(packet[0:4], []byte("TENT"))
 	packet[4] = PacketTypeDiscoveryReq
@@ -18,7 +18,10 @@ func (n *Node) sendDiscoveryRequest(p *peer.Peer) {
 }
 
 // processDiscoveryRequest 处理节点发现请求，返回已知节点列表
-func (n *Node) processDiscoveryRequest(conn net.Conn, remoteAddr net.Addr, transport string) {
+func (n *Node) processDiscoveryRequest(conn net.Conn, remoteAddr net.Addr, transport string, reqPayload []byte) {
+	// 发现请求不包含 Payload，直接忽略任何额外数据
+	// 直接响应已知节点列表
+
 	n.mu.RLock()
 	peerIDs := n.Peers.IDs()
 	n.mu.RUnlock()

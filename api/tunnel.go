@@ -351,11 +351,19 @@ func WithReconnectMaxRetries(maxRetries int) Option {
 }
 
 // WithReconnectBackoff 设置重连退避参数
+// WithReconnectBackoff 设置重连退避参数
 // initialDelay: 初始延迟（默认 1 秒）
 // maxDelay: 最大延迟（默认 5 分钟）
 // multiplier: 退避乘数（默认 2.0）
 func WithReconnectBackoff(initialDelay, maxDelay time.Duration, multiplier float64) Option {
 	return func(c *tunnelConfig) {
 		c.nodeOpts = append(c.nodeOpts, node.WithReconnectBackoff(initialDelay, maxDelay, multiplier))
+	}
+}
+
+// WithChannelID 设置频道 ID (支持多次调用加入多个频道)
+func WithChannelID(channelName string) Option {
+	return func(c *tunnelConfig) {
+		c.nodeOpts = append(c.nodeOpts, node.WithChannelID(channelName))
 	}
 }

@@ -601,7 +601,7 @@ func (n *Node) Connect(addrStr string) error {
 // Send 向对等节点发送数据
 // 如果数据超过 MaxPayloadSize，将自动分包发送
 // 为保证加密数据流的 Nonce 顺序，一次 Send 调用中必须锁定单一传输通道 (TCP/KCP)
-func (n *Node) Send(peerID string, data []byte) error {
+func (n *Node) sendLegacy(peerID string, data []byte) error {
 	// 检查是否尝试向自己发送
 	if peerID == n.ID() {
 		return fmt.Errorf("不能向本节点发送数据")
@@ -887,7 +887,7 @@ func (n *Node) handlePacket(conn net.Conn, remoteAddr net.Addr, transport string
 	case PacketTypeData:
 		n.processData(remoteAddr, payload)
 	case PacketTypeDiscoveryReq:
-		n.processDiscoveryRequest(conn, remoteAddr, transport)
+		n.processDiscoveryRequest(conn, remoteAddr, transport, payload)
 	case PacketTypeDiscoveryResp:
 		n.processDiscoveryResponse(payload)
 	case PacketTypeHeartbeat:
@@ -947,7 +947,7 @@ func (n *Node) processData(remoteAddr net.Addr, payload []byte) {
 	case FrameTypeSingle:
 		// 单包: 直接回调
 		p.ReassemblyBuffer = nil // 清理之前的残包（如果有）
-		onReceive(peerID, frameData)
+		n.handleAppFrame(peerID, p, frameData)
 
 	case FrameTypeFirst:
 		// 首包: 初始化/重置缓冲区
@@ -990,7 +990,7 @@ func (n *Node) processData(remoteAddr net.Addr, payload []byte) {
 		// 完成重组，回调完整数据
 		completeData := make([]byte, p.ReassemblyBuffer.Len())
 		copy(completeData, p.ReassemblyBuffer.Bytes())
-		onReceive(peerID, completeData)
+		n.handleAppFrame(peerID, p, completeData)
 
 		// 重置缓冲区
 		p.ReassemblyBuffer.Reset() // 保留内存但清空内容

@@ -57,6 +57,9 @@ type Peer struct {
 
 	LastSeen time.Time
 
+	// RemoteChannels 对方订阅的频道列表 (存储 Channel Hash)
+	RemoteChannels map[string]struct{}
+
 	// 连接状态
 	State ConnState
 
@@ -118,6 +121,36 @@ func (p *Peer) SetLinkMode(mode string, relayTarget *net.UDPAddr) {
 	defer p.mu.Unlock()
 	p.LinkMode = mode
 	p.RelayTarget = relayTarget
+}
+
+// AddRemoteChannel 记录对方加入了某个频道 (Hash)
+func (p *Peer) AddRemoteChannel(channelHash []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.RemoteChannels == nil {
+		p.RemoteChannels = make(map[string]struct{})
+	}
+	p.RemoteChannels[string(channelHash)] = struct{}{}
+}
+
+// RemoveRemoteChannel 记录对方离开了某个频道 (Hash)
+func (p *Peer) RemoveRemoteChannel(channelHash []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.RemoteChannels != nil {
+		delete(p.RemoteChannels, string(channelHash))
+	}
+}
+
+// HasRemoteChannel 检查对方是否在某个频道 (Hash)
+func (p *Peer) HasRemoteChannel(channelHash []byte) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.RemoteChannels == nil {
+		return false
+	}
+	_, ok := p.RemoteChannels[string(channelHash)]
+	return ok
 }
 
 // GetTransportInfo returns the current transport and address
