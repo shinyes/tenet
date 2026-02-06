@@ -28,7 +28,7 @@
 ### 安装
 
 ```bash
-go get github.com/cykyes/tenet
+go get github.com/shinyes/tenet
 ```
 
 ### 构建环境
@@ -43,8 +43,8 @@ package main
 import (
     "fmt"
     "log"
-    "github.com/cykyes/tenet/api"
-    tlog "github.com/cykyes/tenet/log"
+    "github.com/shinyes/tenet/api"
+    tlog "github.com/shinyes/tenet/log"
 )
 
 func main() {

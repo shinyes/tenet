@@ -4,7 +4,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/cykyes/tenet/internal/protocol"
+	"github.com/shinyes/tenet/internal/protocol"
 )
 
 // heartbeatLoop 心跳循环，定期向所有节点发送心跳并检测超时

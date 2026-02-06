@@ -6,9 +6,9 @@ import (
 	"net"
 	"time"
 
-	"github.com/cykyes/tenet/crypto"
-	"github.com/cykyes/tenet/internal/protocol"
-	"github.com/cykyes/tenet/peer"
+	"github.com/shinyes/tenet/crypto"
+	"github.com/shinyes/tenet/internal/protocol"
+	"github.com/shinyes/tenet/peer"
 )
 
 // processHandshake 处理握手消息

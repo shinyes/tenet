@@ -9,13 +9,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cykyes/tenet/crypto"
-	"github.com/cykyes/tenet/internal/pool"
-	"github.com/cykyes/tenet/internal/protocol"
-	"github.com/cykyes/tenet/metrics"
-	"github.com/cykyes/tenet/nat"
-	"github.com/cykyes/tenet/peer"
-	"github.com/cykyes/tenet/transport"
+	"github.com/shinyes/tenet/crypto"
+	"github.com/shinyes/tenet/internal/pool"
+	"github.com/shinyes/tenet/internal/protocol"
+	"github.com/shinyes/tenet/metrics"
+	"github.com/shinyes/tenet/nat"
+	"github.com/shinyes/tenet/peer"
+	"github.com/shinyes/tenet/transport"
 )
 
 // 协议常量

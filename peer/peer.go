@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cykyes/tenet/crypto"
+	"github.com/shinyes/tenet/crypto"
 )
 
 // ConnState 连接状态

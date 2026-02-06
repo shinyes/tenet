@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cykyes/tenet/crypto"
+	"github.com/shinyes/tenet/crypto"
 )
 
 func createTestNode(t *testing.T, port int, channel string) *Node {

@@ -3,7 +3,7 @@ package node
 import (
 	"net"
 
-	"github.com/cykyes/tenet/peer"
+	"github.com/shinyes/tenet/peer"
 )
 
 // sendDiscoveryRequest 向指定节点发送节点发现请求

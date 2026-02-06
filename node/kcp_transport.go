@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cykyes/tenet/transport"
+	"github.com/shinyes/tenet/transport"
 )
 
 // KCPTransport 封装 KCP 作为可靠传输层

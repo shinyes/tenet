@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/cykyes/tenet/peer"
+	"github.com/shinyes/tenet/peer"
 )
 
 // Channel Update OpCodes

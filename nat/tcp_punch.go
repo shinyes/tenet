@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/cykyes/tenet/transport"
+	"github.com/shinyes/tenet/transport"
 )
 
 // TCPHolePuncher implements TCP Simultaneous Open hole punching

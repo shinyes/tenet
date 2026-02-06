@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cykyes/tenet/crypto"
-	"github.com/cykyes/tenet/log"
-	"github.com/cykyes/tenet/node"
+	"github.com/shinyes/tenet/crypto"
+	"github.com/shinyes/tenet/log"
+	"github.com/shinyes/tenet/node"
 )
 
 // Tunnel 是用户使用的主要接口

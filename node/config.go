@@ -5,8 +5,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/cykyes/tenet/crypto" // Added crypto import
-	"github.com/cykyes/tenet/log"
+	"github.com/shinyes/tenet/crypto" // Added crypto import
+	"github.com/shinyes/tenet/log"
 )
 
 // Config 节点配置

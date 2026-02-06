@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cykyes/tenet/crypto"
-	"github.com/cykyes/tenet/node"
+	"github.com/shinyes/tenet/crypto"
+	"github.com/shinyes/tenet/node"
 )
 
 // Simple logger wrapper to control verbosity

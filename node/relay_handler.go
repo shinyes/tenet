@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/cykyes/tenet/crypto"
-	"github.com/cykyes/tenet/nat"
+	"github.com/shinyes/tenet/crypto"
+	"github.com/shinyes/tenet/nat"
 )
 
 // getRelayAuthenticator 获取或创建中继认证器
