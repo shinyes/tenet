@@ -130,6 +130,26 @@ func (n *Node) GetPeersInChannel(channelName string) []string {
 	return targetPeers
 }
 
+// syncChannelsWithPeer 将本地加入的所有频道同步给指定 Peer
+func (n *Node) syncChannelsWithPeer(peerID string) {
+	n.mu.RLock()
+	channels := make([]string, len(n.Config.Channels))
+	copy(channels, n.Config.Channels)
+	n.mu.RUnlock()
+
+	for _, ch := range channels {
+		hash := hashChannelName(ch)
+		// Payload: [OpCodeJoin] + [Hash]
+		payload := make([]byte, 1+32)
+		payload[0] = OpCodeJoin
+		copy(payload[1:], hash)
+
+		if err := n.sendAppFrame(peerID, AppFrameTypeChannelUpdate, payload); err != nil {
+			n.Config.Logger.Debug("同步频道 %s 给 Peer %s 失败: %v", ch, peerID[:8], err)
+		}
+	}
+}
+
 // handleAppFrame 处理应用层分帧
 func (n *Node) handleAppFrame(peerID string, p *peer.Peer, data []byte) {
 	if len(data) < 1 {

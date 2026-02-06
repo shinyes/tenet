@@ -127,6 +127,7 @@ func (n *Node) processHandshake(conn net.Conn, remoteAddr net.Addr, transport st
 		n.registerRelayCandidate(peerID, remoteAddr)
 		go n.sendDiscoveryRequest(p)
 
+		go n.syncChannelsWithPeer(peerID)
 		if onConnected != nil {
 			go onConnected(peerID)
 		}
@@ -146,6 +147,7 @@ func (n *Node) handleExistingPeer(existingPeer *peer.Peer, conn net.Conn, remote
 		n.mu.Unlock()
 
 		n.registerRelayCandidate(peerID, remoteAddr)
+		go n.syncChannelsWithPeer(peerID) // 同步频道状态
 		return
 	}
 
