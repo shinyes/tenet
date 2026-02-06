@@ -108,7 +108,7 @@ func main() {
 	}
 
 	// 欢迎信息
-	printWelcome(n, *channel)
+	printWelcome(n)
 
 	// 6. 交互式输入循环
 	scanner := bufio.NewScanner(os.Stdin)
@@ -121,7 +121,7 @@ func main() {
 		}
 
 		if strings.HasPrefix(text, "/") {
-			handleCommand(n, text, *channel)
+			handleCommand(n, text)
 		} else {
 			broadcastMessage(n, text)
 		}
@@ -135,7 +135,7 @@ func main() {
 	fmt.Println("\n正在关闭节点...")
 }
 
-func printWelcome(n *node.Node, channel string) {
+func printWelcome(n *node.Node) {
 	fmt.Println("========================================")
 	fmt.Println("      Tenet CLI P2P Chat Node")
 	fmt.Println("========================================")
@@ -148,7 +148,7 @@ func printWelcome(n *node.Node, channel string) {
 	fmt.Println("========================================")
 }
 
-func handleCommand(n *node.Node, cmdStr string, channel string) {
+func handleCommand(n *node.Node, cmdStr string) {
 	parts := strings.Fields(cmdStr)
 	cmd := parts[0]
 	args := parts[1:]
