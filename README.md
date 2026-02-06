@@ -340,3 +340,7 @@ go test ./... -cover
 # 构建示例
 go build -o build/basic ./examples/basic
 ```
+
+## 开源协议
+
+本项目采用 [GNU General Public License v3.0](LICENSE) 开源协议。
