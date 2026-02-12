@@ -17,8 +17,9 @@ const (
 
 // 应用层帧类型 (Encrypted Payload 内)
 const (
-	AppFrameTypeUser          = 0x00
-	AppFrameTypeChannelUpdate = 0x01
+	AppFrameTypeUser            = 0x00 // 用户数据（无频道标志，兼容旧版本）
+	AppFrameTypeUserWithChannel = 0x02 // 用户数据（携带频道标志）
+	AppFrameTypeChannelUpdate   = 0x01 // 频道更新（内部使用）
 )
 
 // hashChannelName 计算频道名称的 SHA-256 哈希
@@ -115,6 +116,22 @@ func (n *Node) processChannelUpdate(p *peer.Peer, payload []byte) {
 	}
 }
 
+// Broadcast 向指定频道广播数据
+func (n *Node) Broadcast(channelName string, data []byte) (int, error) {
+	peers := n.GetPeersInChannel(channelName)
+	if len(peers) == 0 {
+		return 0, nil
+	}
+
+	successCount := 0
+	for _, peerID := range peers {
+		if err := n.Send(channelName, peerID, data); err == nil {
+			successCount++
+		}
+	}
+	return successCount, nil
+}
+
 // GetPeersInChannel 返回指定频道的节点ID列表
 func (n *Node) GetPeersInChannel(channelName string) []string {
 	hash := hashChannelName(channelName)
@@ -128,6 +145,18 @@ func (n *Node) GetPeersInChannel(channelName string) []string {
 		}
 	}
 	return targetPeers
+}
+
+// isChannelSubscribed 检查本地是否订阅了指定频道
+func (n *Node) isChannelSubscribed(channelHash []byte) bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	for _, ch := range n.Config.Channels {
+		if bytes.Equal(hashChannelName(ch), channelHash) {
+			return true
+		}
+	}
+	return false
 }
 
 // syncChannelsWithPeer 将本地加入的所有频道同步给指定 Peer
@@ -159,20 +188,40 @@ func (n *Node) handleAppFrame(peerID string, p *peer.Peer, data []byte) {
 	payload := data[1:]
 
 	switch appFrameType {
-	case AppFrameTypeUser:
-		// 用户数据 -> 回调上层
-		if n.onReceive != nil {
-			n.onReceive(peerID, payload)
+	case AppFrameTypeChannelUser:
+		// 频道用户数据: [ChannelHash(32)] [UserData]
+		if len(payload) < 32 {
+			n.Config.Logger.Warn("收到无效的频道数据帧 (来自 %s)", peerID[:8])
+			return
 		}
+		channelHash := payload[:32]
+		userData := payload[32:]
+
+		// 严格验证频道: 检查本地是否订阅了该频道
+		if !n.isChannelSubscribed(channelHash) {
+			n.Config.Logger.Warn("拒绝接收来自非订阅频道的消息 (Peer: %)s, Hash: %x)", peerID[:8], channelHash[:4])
+			return
+		}
+
+		// 回调上层
+		if n.onReceive != nil {
+			n.onReceive(peerID, userData)
+		}
+
 	case AppFrameTypeChannelUpdate:
 		// 频道更新 -> 内部处理
 		n.processChannelUpdate(p, payload)
 	}
 }
 
-// Send 向对等节点发送数据
-func (n *Node) Send(peerID string, data []byte) error {
-	return n.sendAppFrame(peerID, AppFrameTypeUser, data)
+// Send 向对等节点发送数据 (指定频道)
+func (n *Node) Send(channelName string, peerID string, data []byte) error {
+	// 组合帧: [ChannelHash(32)] [UserData]
+	channelHash := hashChannelName(channelName)
+	frame := make([]byte, 32+len(data))
+	copy(frame[:32], channelHash)
+	copy(frame[32:], data)
+	return n.sendAppFrame(peerID, AppFrameTypeChannelUser, frame)
 }
 
 // sendAppFrame 发送应用层帧 (封装了 AppFrameType)

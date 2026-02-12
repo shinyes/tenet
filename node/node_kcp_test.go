@@ -75,9 +75,13 @@ func TestNodeWithKCP(t *testing.T) {
 	}
 	peerID := peers[0]
 
-	// 发送消息
+	// 发送消息 (加入测试频道)
+	channelName := "test-channel"
+	node1.JoinChannel(channelName)
+	node2.JoinChannel(channelName)
+
 	testMsg := "Hello via KCP!"
-	if err := node1.Send(peerID, []byte(testMsg)); err != nil {
+	if err := node1.Send(channelName, peerID, []byte(testMsg)); err != nil {
 		t.Fatalf("发送失败: %v", err)
 	}
 
@@ -173,11 +177,16 @@ func TestNodeKCPReliableTransfer(t *testing.T) {
 	transport := node1.GetPeerTransport(peerID)
 	t.Logf("传输类型: %s", transport)
 
+	// 加入测试频道
+	channelName := "test-reliable"
+	node1.JoinChannel(channelName)
+	node2.JoinChannel(channelName)
+
 	// 发送多条消息
 	sentBytes := int64(0)
 	for i := 0; i < messageCount; i++ {
 		msg := fmt.Sprintf("Message #%d: Test", i)
-		if err := node1.Send(peerID, []byte(msg)); err != nil {
+		if err := node1.Send(channelName, peerID, []byte(msg)); err != nil {
 			t.Fatalf("发送消息 %d 失败: %v", i, err)
 		}
 		sentBytes += int64(len(msg))
@@ -278,6 +287,11 @@ func BenchmarkNodeSend(b *testing.B) {
 	peers := node1.Peers.IDs()
 	peerID := peers[0]
 
+	// 加入测试频道
+	channelName := "bench-channel"
+	node1.JoinChannel(channelName)
+	node2.JoinChannel(channelName)
+
 	// 等待 KCP 升级
 	time.Sleep(500 * time.Millisecond)
 
@@ -285,7 +299,7 @@ func BenchmarkNodeSend(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		node1.Send(peerID, data)
+		node1.Send(channelName, peerID, data)
 	}
 	b.SetBytes(1024)
 }

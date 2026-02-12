@@ -275,8 +275,17 @@ func handleCommand(n *node.Node, cmdStr string) {
 			return
 		}
 
-		// 发送消息
-		if err := n.Send(targetID, []byte(msgContent)); err != nil {
+		// 发送消息 (使用第一个加入的频道)
+		channelName := ""  // 默认频道
+		if len(n.Config.Channels) > 0 {
+			channelName = n.Config.Channels[0]
+		}
+		if channelName == "" {
+			fmt.Println("[错误] 请先加入频道 (使用 /join <channel_name>)")
+			return
+		}
+
+		if err := n.Send(channelName, targetID, []byte(msgContent)); err != nil {
 			fmt.Printf("发送失败: %v\n", err)
 		} else {
 			fmt.Printf("[私聊] -> <%s>: %s\n", targetID[:8], msgContent)
@@ -292,26 +301,22 @@ func handleCommand(n *node.Node, cmdStr string) {
 }
 
 func broadcastMessage(n *node.Node, text string) {
-	// 收集所有加入相同频道的节点
-	targetPeers := make(map[string]struct{})
-	for _, ch := range n.Config.Channels {
-		peers := n.GetPeersInChannel(ch)
-		for _, pid := range peers {
-			targetPeers[pid] = struct{}{}
-		}
-	}
-
-	if len(targetPeers) == 0 {
-		fmt.Println("[系统] 无共同频道的节点，消息未发送")
+	// 向所有已加入的频道广播消息
+	if len(n.Config.Channels) == 0 {
+		fmt.Println("[系统] 未加入任何频道，消息未发送")
 		return
 	}
 
-	count := 0
 	msg := []byte(text)
-	for pid := range targetPeers {
-		if err := n.Send(pid, msg); err == nil {
-			count++
-		}
+	totalSent := 0
+	for _, ch := range n.Config.Channels {
+		sent, _ := n.Broadcast(ch, msg)
+		totalSent += sent
 	}
-	fmt.Printf("[系统] 消息已发送给 %d 个节点 (频道内广播)\n", count)
+
+	if totalSent == 0 {
+		fmt.Println("[系统] 无同频道的节点，消息未发送")
+	} else {
+		fmt.Printf("[系统] 消息已发送给 %d 个节点\n", totalSent)
+	}
 }

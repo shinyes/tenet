@@ -82,9 +82,15 @@ func (t *Tunnel) Connect(addr string) error {
 	return t.node.Connect(addr)
 }
 
-// Send 发送数据
-func (t *Tunnel) Send(peerID string, data []byte) error {
-	return t.node.Send(peerID, data)
+// Send 发送数据到指定频道的对等节点
+func (t *Tunnel) Send(channelName string, peerID string, data []byte) error {
+	return t.node.Send(channelName, peerID, data)
+}
+
+// Broadcast 向指定频道的所有节点广播数据
+// 返回成功发送的节点数量
+func (t *Tunnel) Broadcast(channelName string, data []byte) (int, error) {
+	return t.node.Broadcast(channelName, data)
 }
 
 // OnReceive 设置接收回调

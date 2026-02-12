@@ -74,7 +74,12 @@ func main() {
     tunnel.OnPeerConnected(func(peerID string) {
         log.Printf("新连接: %s", shortID(peerID))
         // 连接成功后发送问候
-        tunnel.Send(peerID, []byte("Hello Tenet!"))
+        // 发送消息到指定频道的节点
+        tunnel.Send("my-channel", peerID, []byte("Hello Tenet!"))
+
+        // 向频道内所有节点广播消息
+        count, err := tunnel.Broadcast("my-channel", []byte("Broadcast message"))
+        fmt.Printf("消息已发送给 %d 个节点\n", count)
     })
 
     tunnel.OnPeerDisconnected(func(peerID string) {
