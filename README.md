@@ -8,8 +8,8 @@
 - 🆔 **灵活身份**：支持 JSON 格式的可移植身份凭证
 - 🔒 **端到端加密**：使用 Noise Protocol 框架（与 WireGuard 相同）
 - 🔑 **密码组网**：相同密码的节点自动组成私有网络（密码必须配置）
-- � **多频道隐私**：支持多频道订阅，频道名哈希隐藏，实现“暗网”式隔离
-- �🕳️ **NAT 穿透**：支持 TCP (Simultaneous Open) 与 UDP 并行打洞，智能选择最佳链路
+- 🔒 **多频道隐私**：支持多频道订阅，频道名哈希隐藏，实现“暗网”式隔离
+- 🕳️ **NAT 穿透**：支持 TCP (Simultaneous Open) 与 UDP 并行打洞，智能选择最佳链路
 - ⚡ **TCP 优先**：UDP 快速握手后自动升级至抗 QoS 的 TCP 通道
 - 🔄 **自动中继**：打洞失败时自动选择延迟最低的节点进行中继传输
 - 🛣️ **多路复用**：KCP、NAT 打洞与 TENT 协议共享单一 UDP 端口 (Single Socket)
@@ -51,6 +51,7 @@ func main() {
     // 1. 创建节点（密码必须配置）
     tunnel, err := api.NewTunnel(
         api.WithPassword("my-secret-key"), // 必须：相同密码的节点才能互联
+        api.WithChannelID("ops"),         // 加入频道（可多次调用加入多个频道）
         api.WithListenPort(0),             // 0 = 随机端口
         // 可选：启用日志输出（默认静默，适合嵌入其他应用）
         api.WithLogger(tlog.NewStdLogger(tlog.WithLevel(tlog.LevelInfo))),
@@ -136,11 +137,6 @@ go run examples/basic/main.go -l 1232 -s "mysecret" -channel ops -relay "1.2.3.4
 - **重组缓冲区**: 接收端自动重组，单次传输支持上限 50MB（默认，可在 `MaxReassemblySize` 调整）。
 - **通道锁定**: 传输过程中自动锁定可靠通道（TCP/KCP），防止链路切换导致的乱序和解密失败。
 
-### 运行示例
-提供了完整的命令行示例程序：
-- `examples/basic`: 基础连接与简单消息演示。
-- `examples/large_transfer`: **(New)** 大文件传输压力测试，演示 100MB+ 数据的稳定传输。
-
 ## API 参考
 
 ### Tunnel
@@ -152,7 +148,8 @@ go run examples/basic/main.go -l 1232 -s "mysecret" -channel ops -relay "1.2.3.4
 | `Stop()` | 停止服务 |
 | `GracefulStop()` | 优雅关闭（通知对端后再断开） |
 | `Connect(addr)` | 连接对等节点（同时尝试 TCP/UDP 打洞） |
-| `Send(peerID, data)` | 发送数据（支持大文件自动分片） |
+| `Send(channel, peerID, data)` | 发送数据到指定频道的节点（支持大文件自动分片） |
+| `Broadcast(channel, data)` | 向指定频道内所有节点广播数据（返回成功发送的节点数） |
 | `OnReceive(handler)` | 设置接收回调 |
 | `OnPeerConnected(handler)` | 节点连接回调 |
 | `OnPeerDisconnected(handler)` | 节点断开回调 |
@@ -170,7 +167,7 @@ go run examples/basic/main.go -l 1232 -s "mysecret" -channel ops -relay "1.2.3.4
 | 选项 | 说明 |
 |------|------|
 | `WithPassword(pwd)` | **必须**：网络密码（相同密码的节点才能互联） |
-| `WithChannelID(name)` | 加入指定频道（可多次调用以加入多个频道） |
+| `WithChannelID(name)` | 加入指定频道（可多次调用以加入多个频道，不同频道完全隔离） |
 | `WithListenPort(port)` | 监听端口 (UDP/TCP 复用, 0 = 随机分配) |
 | `WithEnableHolePunch(bool)` | 启用 NAT 打洞（默认开启） |
 | `WithEnableRelay(bool)` | 启用中继服务（默认开启） |
@@ -252,7 +249,24 @@ tenet/
 
 ## 工作原理
 
-### 连接流程
+### 频道隔离
+
+Tenet 实现了严格的**频道隔离**机制，确保不同频道之间消息完全隔离：
+
+1. **频道订阅**：节点启动时或运行中可加入任意频道（使用 `WithChannelID` 或 `JoinChannel`）
+2. **频道同步**：连接建立后，节点自动同步本地频道列表给对端
+3. **消息发送**：发送消息时必须指定频道，帧内携带 32 字节 SHA256 频道 Hash
+4. **接收过滤**：接收端严格验证频道 Hash，只有本地订阅的频道消息才能被接收
+5. **完全隔离**：不同频道的节点可以建立物理连接，但无法通信
+
+```
+频道 A [ops]:    Node1 <──────> Node2
+频道 B [dev]:             Node3
+
+✅ Node1 与 Node2 可通信（同频道 ops）
+✅ Node2 与 Node3 可建立物理连接（同一网络）
+❌ Node1 与 Node3 无法通信（不同频道）
+```
 
 ### 连接流程
 
@@ -312,6 +326,8 @@ GOOS=windows GOARCH=amd64 go build -o build/app_windows_amd64.exe ./examples/bas
 
 ## 协议格式
 
+### 网络层帧类型
+
 | 类型 | 值 | 说明 |
 |------|:---:|------|
 | Handshake | 0x01 | Noise 握手 |
@@ -321,6 +337,13 @@ GOOS=windows GOARCH=amd64 go build -o build/app_windows_amd64.exe ./examples/bas
 | DiscoveryResp | 0x05 | 节点发现响应 |
 | Heartbeat | 0x06 | 心跳请求 |
 | HeartbeatAck | 0x07 | 心跳响应 |
+
+### 应用层帧类型
+
+| 类型 | 值 | 说明 |
+|------|:---:|------|
+| ChannelUser | 0x00 | 频道用户数据 [ChannelHash(32)] [UserData] |
+| ChannelUpdate | 0x01 | 频道更新控制帧 [OpCode(1)] [ChannelHash(32)] |
 
 ## 依赖
 
