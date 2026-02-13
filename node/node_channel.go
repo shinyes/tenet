@@ -188,7 +188,7 @@ func (n *Node) handleAppFrame(peerID string, p *peer.Peer, data []byte) {
 	payload := data[1:]
 
 	switch appFrameType {
-	case AppFrameTypeChannelUser:
+	case AppFrameTypeUserWithChannel:
 		// 频道用户数据: [ChannelHash(32)] [UserData]
 		if len(payload) < 32 {
 			n.Config.Logger.Warn("收到无效的频道数据帧 (来自 %s)", peerID[:8])
@@ -199,7 +199,7 @@ func (n *Node) handleAppFrame(peerID string, p *peer.Peer, data []byte) {
 
 		// 严格验证频道: 检查本地是否订阅了该频道
 		if !n.isChannelSubscribed(channelHash) {
-			n.Config.Logger.Warn("拒绝接收来自非订阅频道的消息 (Peer: %)s, Hash: %x)", peerID[:8], channelHash[:4])
+			n.Config.Logger.Warn("拒绝接收来自非订阅频道的消息 (Peer: %s, Hash: %x)", peerID[:8], channelHash[:4])
 			return
 		}
 
@@ -221,7 +221,7 @@ func (n *Node) Send(channelName string, peerID string, data []byte) error {
 	frame := make([]byte, 32+len(data))
 	copy(frame[:32], channelHash)
 	copy(frame[32:], data)
-	return n.sendAppFrame(peerID, AppFrameTypeChannelUser, frame)
+	return n.sendAppFrame(peerID, AppFrameTypeUserWithChannel, frame)
 }
 
 // sendAppFrame 发送应用层帧 (封装了 AppFrameType)

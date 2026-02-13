@@ -11,7 +11,7 @@ import (
 func TestChannelIsolation(t *testing.T) {
 	t.Run("同频道通信", func(t *testing.T) {
 		channelA := "channel-a"
-		
+
 		node1, err := NewNode(
 			WithNetworkPassword("test-secret"),
 			WithListenPort(0),
@@ -41,13 +41,12 @@ func TestChannelIsolation(t *testing.T) {
 
 		// 设置接收回调
 		var receivedMsg string
-		var receivedPeer string
 		var mu sync.Mutex
 		node2.OnReceive(func(peerID string, data []byte) {
 			mu.Lock()
 			defer mu.Unlock()
 			receivedMsg = string(data)
-			receivedPeer = peerID
+			_ = peerID // unused
 		})
 
 		// 等待连接
@@ -188,7 +187,7 @@ func TestChannelIsolation(t *testing.T) {
 		// 记录接收情况
 		var node2Received, node3Received bool
 		var mu sync.Mutex
-		
+
 		node2.OnReceive(func(peerID string, data []byte) {
 			mu.Lock()
 			node2Received = true
@@ -227,9 +226,9 @@ func TestChannelIsolation(t *testing.T) {
 
 		mu.Lock()
 		defer mu.Unlock()
-		
+
 		t.Logf("广播发送给 %d 个节点", count)
-		
+
 		if node2Received && !node3Received {
 			t.Logf("✓ 广播隔离正确：同频道节点 %s 收到消息，不同频道节点未收到", node2.ID()[:8])
 		} else {
