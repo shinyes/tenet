@@ -221,3 +221,66 @@ func TestPeerClose(t *testing.T) {
 		t.Errorf("Close 后状态应为 Disconnected，实际 %v", peer.GetState())
 	}
 }
+
+func TestPeerReserveRehandshakeAttemptWindow(t *testing.T) {
+	p := &Peer{ID: "test"}
+	now := time.Now()
+
+	ok, wait := p.ReserveRehandshakeAttempt(now, time.Second, 2)
+	if !ok || wait != 0 {
+		t.Fatalf("first attempt should pass, ok=%v wait=%v", ok, wait)
+	}
+
+	ok, wait = p.ReserveRehandshakeAttempt(now.Add(10*time.Millisecond), time.Second, 2)
+	if !ok || wait != 0 {
+		t.Fatalf("second attempt should pass, ok=%v wait=%v", ok, wait)
+	}
+
+	ok, wait = p.ReserveRehandshakeAttempt(now.Add(20*time.Millisecond), time.Second, 2)
+	if ok {
+		t.Fatal("third attempt in the same window should be throttled")
+	}
+	if wait <= 0 {
+		t.Fatalf("throttled wait should be positive, got %v", wait)
+	}
+}
+
+func TestPeerRecordRehandshakeFailureBackoffAndReset(t *testing.T) {
+	p := &Peer{ID: "test"}
+	base := 100 * time.Millisecond
+	max := 800 * time.Millisecond
+	now := time.Now()
+
+	failures, delay := p.RecordRehandshakeFailure(now, base, max)
+	if failures != 1 {
+		t.Fatalf("expected first failure count 1, got %d", failures)
+	}
+	if delay != base {
+		t.Fatalf("expected first backoff %v, got %v", base, delay)
+	}
+
+	ok, wait := p.ReserveRehandshakeAttempt(now.Add(20*time.Millisecond), time.Second, 10)
+	if ok {
+		t.Fatal("attempt during backoff should be throttled")
+	}
+	if wait <= 0 {
+		t.Fatalf("expected positive wait during backoff, got %v", wait)
+	}
+
+	failures, delay = p.RecordRehandshakeFailure(now.Add(base), base, max)
+	if failures != 2 {
+		t.Fatalf("expected second failure count 2, got %d", failures)
+	}
+	if delay != 2*base {
+		t.Fatalf("expected second backoff %v, got %v", 2*base, delay)
+	}
+
+	p.RecordRehandshakeSuccess(now.Add(2*base), 0)
+	failures, delay = p.RecordRehandshakeFailure(now.Add(3*base), base, max)
+	if failures != 1 {
+		t.Fatalf("expected failure count reset to 1 after success, got %d", failures)
+	}
+	if delay != base {
+		t.Fatalf("expected backoff reset to base %v, got %v", base, delay)
+	}
+}

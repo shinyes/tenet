@@ -174,6 +174,8 @@ func (n *Node) handleExistingPeer(existingPeer *peer.Peer, conn net.Conn, remote
 	delete(n.pendingHandshakes, stateKey)
 	n.mu.Unlock()
 
+	// Refresh session even when transport does not change (fast re-handshake path).
+	existingPeer.UpgradeTransport(remoteAddr, conn, transport, session)
 	existingPeer.UpdateLastSeen()
 	n.registerRelayCandidate(peerID, remoteAddr)
 }

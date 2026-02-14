@@ -895,13 +895,22 @@ func (n *Node) processData(remoteAddr net.Addr, payload []byte) {
 
 	plaintext, err := p.Decrypt(payload)
 	if err != nil {
-		n.Config.Logger.Warn("来自 %s 的解密错误: %v", peerID[:8], err)
+		failures := p.IncDecryptFailures()
+		n.Config.Logger.Warn("decrypt error from %s: %v", peerID[:8], err)
 		if n.metrics != nil {
 			n.metrics.IncErrorsTotal()
 		}
+		if failures >= n.Config.MaxConsecutiveDecryptFailures {
+			n.Config.Logger.Warn(
+				"Peer %s reached decrypt failure threshold (%d), starting fast re-handshake",
+				peerID[:8],
+				n.Config.MaxConsecutiveDecryptFailures,
+			)
+			n.triggerFastRehandshake(peerID, p)
+		}
 		return
 	}
-
+	p.ResetDecryptFailures()
 	// 协议变更：第一个字节是 FrameType
 	if len(plaintext) < 1 {
 		return

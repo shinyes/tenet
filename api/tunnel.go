@@ -374,6 +374,41 @@ func WithReconnectBackoff(initialDelay, maxDelay time.Duration, multiplier float
 	}
 }
 
+// WithMaxConsecutiveDecryptFailures 设置连续解密失败阈值
+func WithMaxConsecutiveDecryptFailures(max int) Option {
+	return func(c *tunnelConfig) {
+		c.nodeOpts = append(c.nodeOpts, node.WithMaxConsecutiveDecryptFailures(max))
+	}
+}
+
+// WithFastRehandshakeBackoff sets fast re-handshake backoff parameters.
+func WithFastRehandshakeBackoff(baseDelay, maxDelay time.Duration) Option {
+	return func(c *tunnelConfig) {
+		c.nodeOpts = append(c.nodeOpts, node.WithFastRehandshakeBackoff(baseDelay, maxDelay))
+	}
+}
+
+// WithFastRehandshakeWindow sets fast re-handshake attempt window and max attempts.
+func WithFastRehandshakeWindow(window time.Duration, maxAttempts int) Option {
+	return func(c *tunnelConfig) {
+		c.nodeOpts = append(c.nodeOpts, node.WithFastRehandshakeWindow(window, maxAttempts))
+	}
+}
+
+// WithFastRehandshakeFailThreshold sets the failure threshold before reconnect fallback.
+func WithFastRehandshakeFailThreshold(threshold int) Option {
+	return func(c *tunnelConfig) {
+		c.nodeOpts = append(c.nodeOpts, node.WithFastRehandshakeFailThreshold(threshold))
+	}
+}
+
+// WithFastRehandshakePendingTTL sets pending handshake TTL used by fast re-handshake.
+func WithFastRehandshakePendingTTL(ttl time.Duration) Option {
+	return func(c *tunnelConfig) {
+		c.nodeOpts = append(c.nodeOpts, node.WithFastRehandshakePendingTTL(ttl))
+	}
+}
+
 // WithChannelID 设置频道 ID (支持多次调用加入多个频道)
 func WithChannelID(channelName string) Option {
 	return func(c *tunnelConfig) {

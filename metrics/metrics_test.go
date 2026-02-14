@@ -259,3 +259,23 @@ func TestGlobalCollector(t *testing.T) {
 		t.Error("Global 收集器无法正常工作")
 	}
 }
+
+func TestFastRehandshakeStats(t *testing.T) {
+	c := NewCollector()
+
+	c.IncFastRehandshakeAttempts()
+	c.IncFastRehandshakeAttempts()
+	c.IncFastRehandshakeSuccess()
+	c.IncFastRehandshakeFailed()
+
+	snap := c.GetSnapshot()
+	if snap.FastRehandshakeAttempts != 2 {
+		t.Errorf("FastRehandshakeAttempts expected 2, got %d", snap.FastRehandshakeAttempts)
+	}
+	if snap.FastRehandshakeSuccess != 1 {
+		t.Errorf("FastRehandshakeSuccess expected 1, got %d", snap.FastRehandshakeSuccess)
+	}
+	if snap.FastRehandshakeFailed != 1 {
+		t.Errorf("FastRehandshakeFailed expected 1, got %d", snap.FastRehandshakeFailed)
+	}
+}

@@ -244,6 +244,10 @@ func (n *Node) sendAppFrame(peerID string, appFrameType byte, data []byte) error
 	if !ok {
 		return fmt.Errorf("未找到对等节点: %s", peerID)
 	}
+	// Serialize data sending with transport/session switch.
+	p.LockDataSend()
+	defer p.UnlockDataSend()
+
 	session := p.GetSession()
 	if session == nil {
 		return fmt.Errorf("对等节点会话未建立")
@@ -262,25 +266,20 @@ func (n *Node) sendAppFrame(peerID string, appFrameType byte, data []byte) error
 			return n.kcpTransport.Send(p.ID, payload)
 		}
 	} else if transport == "udp" {
-		if udpAddr, ok := addr.(*net.UDPAddr); ok && n.kcpTransport != nil {
-			if err := n.kcpTransport.UpgradePeer(p.ID, udpAddr); err == nil {
-				sendFunc = func(payload []byte) error {
-					return n.kcpTransport.Send(p.ID, payload)
-				}
-			} else {
-				sendFunc = func(payload []byte) error {
-					_, err := n.tentConn.WriteTo(payload, udpAddr)
-					return err
-				}
-			}
-		} else if udpAddr, ok := addr.(*net.UDPAddr); ok {
-			sendFunc = func(payload []byte) error {
-				_, err := n.tentConn.WriteTo(payload, udpAddr)
-				return err
-			}
+		udpAddr, ok := addr.(*net.UDPAddr)
+		if !ok {
+			return fmt.Errorf("udp transport has invalid address type")
+		}
+		if n.kcpTransport == nil {
+			return fmt.Errorf("reliable data transport unavailable: udp peer without kcp")
+		}
+		if err := n.kcpTransport.UpgradePeer(p.ID, udpAddr); err != nil {
+			return fmt.Errorf("failed to upgrade to kcp for data transport: %w", err)
+		}
+		sendFunc = func(payload []byte) error {
+			return n.kcpTransport.Send(p.ID, payload)
 		}
 	}
-
 	if sendFunc == nil {
 		return fmt.Errorf("无法建立发送通道")
 	}

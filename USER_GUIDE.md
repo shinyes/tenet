@@ -67,7 +67,42 @@ tunnel, _ := api.NewTunnel(
 
 - 你更关注“减少无效发送”，并且可接受频道同步窗口内的广播丢失
 
-## 4. 常见问题
+## 4. 解密失败与快速恢复（重点）
+
+### 典型症状
+
+- 日志中高频出现 `cipher: message authentication failed`
+- 某一侧开始连续解密失败，且短时间内无法自行恢复
+
+### 当前库层恢复路径
+
+1. 连续解密失败达到阈值（`WithMaxConsecutiveDecryptFailures`）后，触发 fast re-handshake  
+2. 优先在当前链路立即重握手（不必先完整 reconnect）  
+3. 若重握手失败，按退避和窗口限次继续尝试  
+4. 仅当连续失败达到阈值后，才回退到 reconnect
+
+### 数据通道约束
+
+- 业务数据面仅走可靠有序通道（TCP/KCP）
+- 不会回退到裸 UDP；若可靠通道不可用，会返回 `reliable data transport unavailable`
+
+### 推荐配置
+
+```go
+api.WithMaxConsecutiveDecryptFailures(16)
+api.WithFastRehandshakeBackoff(500*time.Millisecond, 8*time.Second)
+api.WithFastRehandshakeWindow(30*time.Second, 6)
+api.WithFastRehandshakeFailThreshold(3)
+api.WithFastRehandshakePendingTTL(30*time.Second)
+```
+
+### 观测指标（`GetMetrics`）
+
+- `FastRehandshakeAttempts`
+- `FastRehandshakeSuccess`
+- `FastRehandshakeFailed`
+
+## 5. 常见问题
 
 ### Q1：已连接节点没加入频道，为什么看起来还能“转发”？
 
@@ -85,13 +120,24 @@ A：发送方本地没有加入该频道。请先在初始化时加 `WithChannel
 
 A：使用 `PeerTransport(peerID)` 和 `PeerLinkMode(peerID)`。
 
-## 5. 版本升级说明（v1.1.1）
+### Q5：持续出现 `cipher: message authentication failed`，第一步该做什么？
+
+A：先排查应用层是否存在消息风暴/回环；再确认双方 TCP/KCP 可用。之后通过 fast re-handshake 参数调优恢复节奏，并结合指标判断恢复效果。
+
+### Q6：`reliable data transport unavailable` 是什么问题？
+
+A：表示当前只剩 UDP 且 KCP 不可用。业务数据面不会降级到裸 UDP，需要修复 TCP/KCP 可用性。
+
+## 6. 版本升级说明（v1.1.1）
 
 - 兼容性：无破坏性 API 变更
 - 修复项：
   - 并发竞态（会话、地址、链路模式读取）
   - `onReceive == nil` 时频道更新帧误跳过
   - TCP 全局写锁导致跨连接串行化
+  - 连续解密失败后 fast re-handshake 快速恢复路径
+  - fast re-handshake 增加冲突保护、退避与窗口限次、失败阈值回退 reconnect
+  - 新增 fast re-handshake 指标与配置项
 
 建议在生产环境开启 `-race` 完成一次回归验证：
 
@@ -99,8 +145,7 @@ A：使用 `PeerTransport(peerID)` 和 `PeerLinkMode(peerID)`。
 go test ./... -race
 ```
 
-## 6. 参考文档
+## 7. 参考文档
 
 - 项目说明：`README.md`
 - 版本记录：`CHANGELOG.md`
-

@@ -75,10 +75,23 @@ type Peer struct {
 	LastFrameTime    time.Time     // 上次收到分片的时间
 
 	mu sync.RWMutex
+	// sendMu makes data-plane switch and send operation mutually exclusive.
+	sendMu sync.Mutex
+
+	consecutiveDecryptFails     int
+	consecutiveRehandshakeFails int
+	rehandshakeInFlight         bool
+	rehandshakeBackoff          time.Duration
+	rehandshakeNextAttempt      time.Time
+	rehandshakeWindowStart      time.Time
+	rehandshakeWindowCount      int
 }
 
 // UpgradeTransport safely updates the peer connection info
 func (p *Peer) UpgradeTransport(addr net.Addr, conn net.Conn, transport string, session *crypto.Session) {
+	p.sendMu.Lock()
+	defer p.sendMu.Unlock()
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -113,6 +126,13 @@ func (p *Peer) UpgradeTransport(addr net.Addr, conn net.Conn, transport string, 
 	p.Transport = transport
 	p.Session = session
 	p.LastSeen = time.Now()
+	p.consecutiveDecryptFails = 0
+	p.consecutiveRehandshakeFails = 0
+	p.rehandshakeBackoff = 0
+	p.rehandshakeNextAttempt = time.Time{}
+	p.rehandshakeWindowStart = time.Time{}
+	p.rehandshakeWindowCount = 0
+	p.rehandshakeInFlight = false
 }
 
 // SetLinkMode 设置链路模式和中继目标
@@ -197,6 +217,9 @@ func (p *Peer) GetOriginalAddr() string {
 
 // Close 关闭连接并安全清理会话密钥
 func (p *Peer) Close() {
+	p.sendMu.Lock()
+	defer p.sendMu.Unlock()
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.State = StateDisconnected
@@ -215,6 +238,23 @@ func (p *Peer) Close() {
 		p.Conn.Close()
 		p.Conn = nil
 	}
+	p.consecutiveDecryptFails = 0
+	p.consecutiveRehandshakeFails = 0
+	p.rehandshakeBackoff = 0
+	p.rehandshakeNextAttempt = time.Time{}
+	p.rehandshakeWindowStart = time.Time{}
+	p.rehandshakeWindowCount = 0
+	p.rehandshakeInFlight = false
+}
+
+// LockDataSend serializes application data sending with transport switch.
+func (p *Peer) LockDataSend() {
+	p.sendMu.Lock()
+}
+
+// UnlockDataSend releases the send lock.
+func (p *Peer) UnlockDataSend() {
+	p.sendMu.Unlock()
 }
 
 // SetState 设置连接状态
@@ -359,4 +399,108 @@ func (p *Peer) Decrypt(payload []byte) ([]byte, error) {
 	}
 
 	return nil, err
+}
+
+// IncDecryptFailures increases consecutive decrypt failures and returns the latest count.
+func (p *Peer) IncDecryptFailures() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.consecutiveDecryptFails++
+	return p.consecutiveDecryptFails
+}
+
+// ResetDecryptFailures clears consecutive decrypt failure count.
+func (p *Peer) ResetDecryptFailures() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.consecutiveDecryptFails = 0
+}
+
+// TryBeginRehandshake marks a fast re-handshake as in-flight.
+// It returns false when another attempt is already running.
+func (p *Peer) TryBeginRehandshake() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.rehandshakeInFlight {
+		return false
+	}
+	p.rehandshakeInFlight = true
+	return true
+}
+
+// EndRehandshake clears the in-flight re-handshake mark.
+func (p *Peer) EndRehandshake() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.rehandshakeInFlight = false
+}
+
+// ReserveRehandshakeAttempt checks backoff/window gates and reserves one attempt.
+func (p *Peer) ReserveRehandshakeAttempt(now time.Time, window time.Duration, maxInWindow int) (bool, time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if !p.rehandshakeNextAttempt.IsZero() && now.Before(p.rehandshakeNextAttempt) {
+		return false, p.rehandshakeNextAttempt.Sub(now)
+	}
+
+	if window > 0 {
+		if p.rehandshakeWindowStart.IsZero() || now.Sub(p.rehandshakeWindowStart) >= window {
+			p.rehandshakeWindowStart = now
+			p.rehandshakeWindowCount = 0
+		}
+		if maxInWindow > 0 && p.rehandshakeWindowCount >= maxInWindow {
+			wait := p.rehandshakeWindowStart.Add(window).Sub(now)
+			if wait < 0 {
+				wait = 0
+			}
+			return false, wait
+		}
+	}
+
+	p.rehandshakeWindowCount++
+	return true, 0
+}
+
+// RecordRehandshakeFailure applies exponential backoff and returns fail count and delay.
+func (p *Peer) RecordRehandshakeFailure(now time.Time, baseBackoff, maxBackoff time.Duration) (int, time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if baseBackoff <= 0 {
+		baseBackoff = time.Second
+	}
+	if maxBackoff > 0 && maxBackoff < baseBackoff {
+		maxBackoff = baseBackoff
+	}
+
+	p.consecutiveRehandshakeFails++
+	if p.rehandshakeBackoff <= 0 {
+		p.rehandshakeBackoff = baseBackoff
+	} else {
+		p.rehandshakeBackoff *= 2
+		if p.rehandshakeBackoff < baseBackoff {
+			p.rehandshakeBackoff = baseBackoff
+		}
+	}
+	if maxBackoff > 0 && p.rehandshakeBackoff > maxBackoff {
+		p.rehandshakeBackoff = maxBackoff
+	}
+
+	p.rehandshakeNextAttempt = now.Add(p.rehandshakeBackoff)
+	return p.consecutiveRehandshakeFails, p.rehandshakeBackoff
+}
+
+// RecordRehandshakeSuccess clears fail counters and applies a short cooldown.
+func (p *Peer) RecordRehandshakeSuccess(now time.Time, cooldown time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.consecutiveRehandshakeFails = 0
+	p.rehandshakeBackoff = 0
+	if cooldown > 0 {
+		p.rehandshakeNextAttempt = now.Add(cooldown)
+	} else {
+		p.rehandshakeNextAttempt = time.Time{}
+	}
 }

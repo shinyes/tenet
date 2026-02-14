@@ -59,6 +59,16 @@ type Config struct {
 	// 重连配置（nil 表示使用默认配置）
 	ReconnectConfig *ReconnectConfig
 
+	// 连续解密失败阈值；达到后会触发断线重连，避免会话永久失步
+	MaxConsecutiveDecryptFailures int
+
+	FastRehandshakeBaseBackoff       time.Duration
+	FastRehandshakeMaxBackoff        time.Duration
+	FastRehandshakeWindow            time.Duration
+	FastRehandshakeMaxAttemptsWindow int
+	FastRehandshakeFailThreshold     int
+	FastRehandshakePendingTTL        time.Duration
+
 	// 本地订阅的频道名称列表
 	Channels []string
 
@@ -85,10 +95,17 @@ func DefaultConfig() *Config {
 		EnableRelayAuth:   true,
 		RelayAuthTTL:      5 * time.Minute,
 
-		KCPConfig:               nil,
-		EnableReconnect:         true,
-		ReconnectConfig:         nil,
-		EnableBroadcastFallback: true,
+		KCPConfig:                        nil,
+		EnableReconnect:                  true,
+		ReconnectConfig:                  nil,
+		MaxConsecutiveDecryptFailures:    16,
+		FastRehandshakeBaseBackoff:       500 * time.Millisecond,
+		FastRehandshakeMaxBackoff:        8 * time.Second,
+		FastRehandshakeWindow:            30 * time.Second,
+		FastRehandshakeMaxAttemptsWindow: 6,
+		FastRehandshakeFailThreshold:     3,
+		FastRehandshakePendingTTL:        30 * time.Second,
+		EnableBroadcastFallback:          true,
 	}
 }
 
@@ -131,6 +148,30 @@ func (c *Config) Validate() error {
 	// 中继认证 TTL
 	if c.EnableRelayAuth && c.RelayAuthTTL <= 0 {
 		errs = append(errs, errors.New("RelayAuthTTL must be positive when EnableRelayAuth is true"))
+	}
+	if c.MaxConsecutiveDecryptFailures <= 0 {
+		errs = append(errs, errors.New("MaxConsecutiveDecryptFailures must be positive"))
+	}
+	if c.FastRehandshakeBaseBackoff <= 0 {
+		errs = append(errs, errors.New("FastRehandshakeBaseBackoff must be positive"))
+	}
+	if c.FastRehandshakeMaxBackoff <= 0 {
+		errs = append(errs, errors.New("FastRehandshakeMaxBackoff must be positive"))
+	}
+	if c.FastRehandshakeMaxBackoff < c.FastRehandshakeBaseBackoff {
+		errs = append(errs, errors.New("FastRehandshakeMaxBackoff must be >= FastRehandshakeBaseBackoff"))
+	}
+	if c.FastRehandshakeWindow <= 0 {
+		errs = append(errs, errors.New("FastRehandshakeWindow must be positive"))
+	}
+	if c.FastRehandshakeMaxAttemptsWindow <= 0 {
+		errs = append(errs, errors.New("FastRehandshakeMaxAttemptsWindow must be positive"))
+	}
+	if c.FastRehandshakeFailThreshold <= 0 {
+		errs = append(errs, errors.New("FastRehandshakeFailThreshold must be positive"))
+	}
+	if c.FastRehandshakePendingTTL <= 0 {
+		errs = append(errs, errors.New("FastRehandshakePendingTTL must be positive"))
 	}
 
 	// 中继地址格式
@@ -280,6 +321,43 @@ func WithReconnectBackoff(initialDelay, maxDelay time.Duration, multiplier float
 		c.ReconnectConfig.InitialDelay = initialDelay
 		c.ReconnectConfig.MaxDelay = maxDelay
 		c.ReconnectConfig.BackoffMultiplier = multiplier
+	}
+}
+
+// WithMaxConsecutiveDecryptFailures 设置连续解密失败阈值
+func WithMaxConsecutiveDecryptFailures(max int) Option {
+	return func(c *Config) {
+		c.MaxConsecutiveDecryptFailures = max
+	}
+}
+
+// WithFastRehandshakeBackoff sets fast re-handshake backoff parameters.
+func WithFastRehandshakeBackoff(baseDelay, maxDelay time.Duration) Option {
+	return func(c *Config) {
+		c.FastRehandshakeBaseBackoff = baseDelay
+		c.FastRehandshakeMaxBackoff = maxDelay
+	}
+}
+
+// WithFastRehandshakeWindow sets fast re-handshake attempt window and max attempts.
+func WithFastRehandshakeWindow(window time.Duration, maxAttempts int) Option {
+	return func(c *Config) {
+		c.FastRehandshakeWindow = window
+		c.FastRehandshakeMaxAttemptsWindow = maxAttempts
+	}
+}
+
+// WithFastRehandshakeFailThreshold sets the failure threshold before reconnect fallback.
+func WithFastRehandshakeFailThreshold(threshold int) Option {
+	return func(c *Config) {
+		c.FastRehandshakeFailThreshold = threshold
+	}
+}
+
+// WithFastRehandshakePendingTTL sets pending handshake TTL used by fast re-handshake.
+func WithFastRehandshakePendingTTL(ttl time.Duration) Option {
+	return func(c *Config) {
+		c.FastRehandshakePendingTTL = ttl
 	}
 }
 

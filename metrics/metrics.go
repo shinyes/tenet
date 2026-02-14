@@ -1,4 +1,3 @@
-// Package metrics 提供 tenet P2P 网络的监控与统计。
 package metrics
 
 import (
@@ -7,59 +6,63 @@ import (
 	"time"
 )
 
-// Collector 指标收集器
+// Collector collects runtime metrics for a node.
 type Collector struct {
-	// 连接统计
-	connectionsTotal   int64 // 总连接次数
-	connectionsFailed  int64 // 连接失败次数
-	connectionsActive  int64 // 当前活跃连接数
-	disconnectsTotal   int64 // 断开连接次数
-	handshakesTotal    int64 // 握手总次数
-	handshakesFailed   int64 // 握手失败次数
-	handshakeLatencyNs int64 // 握手延迟累计（纳秒）
-	handshakeCount     int64 // 握手次数（用于计算平均值）
+	// Connection stats.
+	connectionsTotal   int64
+	connectionsFailed  int64
+	connectionsActive  int64
+	disconnectsTotal   int64
+	handshakesTotal    int64
+	handshakesFailed   int64
+	handshakeLatencyNs int64
+	handshakeCount     int64
 
-	// 流量统计
-	bytesSent     int64 // 发送字节数
-	bytesReceived int64 // 接收字节数
-	packetsSent   int64 // 发送包数
-	packetsRecv   int64 // 接收包数
+	// Traffic stats.
+	bytesSent     int64
+	bytesReceived int64
+	packetsSent   int64
+	packetsRecv   int64
 
-	// NAT 打洞统计
-	punchAttemptsUDP int64 // UDP 打洞尝试次数
-	punchSuccessUDP  int64 // UDP 打洞成功次数
-	punchAttemptsTCP int64 // TCP 打洞尝试次数
-	punchSuccessTCP  int64 // TCP 打洞成功次数
+	// NAT punch stats.
+	punchAttemptsUDP int64
+	punchSuccessUDP  int64
+	punchAttemptsTCP int64
+	punchSuccessTCP  int64
 
-	// 中继统计
-	relayPackets    int64 // 中继转发包数
-	relayBytes      int64 // 中继转发字节数
-	relayConnects   int64 // 通过中继建立的连接数
-	relayAuthFailed int64 // 中继认证失败次数
+	// Relay stats.
+	relayPackets    int64
+	relayBytes      int64
+	relayConnects   int64
+	relayAuthFailed int64
 
-	// 错误统计
-	errorsTotal int64 // 总错误数
+	// Error stats.
+	errorsTotal int64
 
-	// 重连统计
-	reconnectAttempts int64 // 重连尝试次数
-	reconnectSuccess  int64 // 重连成功次数
-	reconnectFailed   int64 // 重连失败次数（单次尝试失败）
-	reconnectGaveUp   int64 // 放弃重连次数（达到最大重试）
+	// Reconnect stats.
+	reconnectAttempts int64
+	reconnectSuccess  int64
+	reconnectFailed   int64
+	reconnectGaveUp   int64
 
-	// 启动时间
+	// Fast re-handshake stats.
+	fastRehandshakeAttempts int64
+	fastRehandshakeSuccess  int64
+	fastRehandshakeFailed   int64
+
 	startTime time.Time
 
-	// 历史记录（用于计算速率）
+	// Historical buffers reserved for rate calculations.
 	mu            sync.RWMutex
-	bytesSentHist []int64 // 每秒发送字节数历史
-	bytesRecvHist []int64 // 每秒接收字节数历史
+	bytesSentHist []int64
+	bytesRecvHist []int64
 	histIndex     int
 	histSize      int
 }
 
-// NewCollector 创建新的指标收集器
+// NewCollector creates a new Collector.
 func NewCollector() *Collector {
-	histSize := 60 // 保留60秒历史
+	histSize := 60
 	return &Collector{
 		startTime:     time.Now(),
 		bytesSentHist: make([]int64, histSize),
@@ -68,139 +71,113 @@ func NewCollector() *Collector {
 	}
 }
 
-// --- 连接统计 ---
-
-// IncConnectionsTotal 增加总连接次数
 func (c *Collector) IncConnectionsTotal() {
 	atomic.AddInt64(&c.connectionsTotal, 1)
 }
 
-// IncConnectionsFailed 增加连接失败次数
 func (c *Collector) IncConnectionsFailed() {
 	atomic.AddInt64(&c.connectionsFailed, 1)
 }
 
-// SetConnectionsActive 设置当前活跃连接数
 func (c *Collector) SetConnectionsActive(n int64) {
 	atomic.StoreInt64(&c.connectionsActive, n)
 }
 
-// IncDisconnectsTotal 增加断开连接次数
 func (c *Collector) IncDisconnectsTotal() {
 	atomic.AddInt64(&c.disconnectsTotal, 1)
 }
 
-// IncHandshakesTotal 增加握手总次数
 func (c *Collector) IncHandshakesTotal() {
 	atomic.AddInt64(&c.handshakesTotal, 1)
 }
 
-// IncHandshakesFailed 增加握手失败次数
 func (c *Collector) IncHandshakesFailed() {
 	atomic.AddInt64(&c.handshakesFailed, 1)
 }
 
-// RecordHandshakeLatency 记录握手延迟
 func (c *Collector) RecordHandshakeLatency(d time.Duration) {
 	atomic.AddInt64(&c.handshakeLatencyNs, int64(d))
 	atomic.AddInt64(&c.handshakeCount, 1)
 }
 
-// --- 流量统计 ---
-
-// AddBytesSent 增加发送字节数
 func (c *Collector) AddBytesSent(n int64) {
 	atomic.AddInt64(&c.bytesSent, n)
 	atomic.AddInt64(&c.packetsSent, 1)
 }
 
-// AddBytesReceived 增加接收字节数
 func (c *Collector) AddBytesReceived(n int64) {
 	atomic.AddInt64(&c.bytesReceived, n)
 	atomic.AddInt64(&c.packetsRecv, 1)
 }
 
-// --- NAT 打洞统计 ---
-
-// IncPunchAttemptUDP 增加 UDP 打洞尝试次数
 func (c *Collector) IncPunchAttemptUDP() {
 	atomic.AddInt64(&c.punchAttemptsUDP, 1)
 }
 
-// IncPunchSuccessUDP 增加 UDP 打洞成功次数
 func (c *Collector) IncPunchSuccessUDP() {
 	atomic.AddInt64(&c.punchSuccessUDP, 1)
 }
 
-// IncPunchAttemptTCP 增加 TCP 打洞尝试次数
 func (c *Collector) IncPunchAttemptTCP() {
 	atomic.AddInt64(&c.punchAttemptsTCP, 1)
 }
 
-// IncPunchSuccessTCP 增加 TCP 打洞成功次数
 func (c *Collector) IncPunchSuccessTCP() {
 	atomic.AddInt64(&c.punchSuccessTCP, 1)
 }
 
-// --- 中继统计 ---
-
-// IncRelayPackets 增加中继转发包数
 func (c *Collector) IncRelayPackets() {
 	atomic.AddInt64(&c.relayPackets, 1)
 }
 
-// AddRelayBytes 增加中继转发字节数
 func (c *Collector) AddRelayBytes(n int64) {
 	atomic.AddInt64(&c.relayBytes, n)
 }
 
-// IncRelayConnects 增加通过中继建立的连接数
 func (c *Collector) IncRelayConnects() {
 	atomic.AddInt64(&c.relayConnects, 1)
 }
 
-// IncRelayAuthFailed 增加中继认证失败次数
 func (c *Collector) IncRelayAuthFailed() {
 	atomic.AddInt64(&c.relayAuthFailed, 1)
 }
 
-// --- 错误统计 ---
-
-// IncErrorsTotal 增加总错误数
 func (c *Collector) IncErrorsTotal() {
 	atomic.AddInt64(&c.errorsTotal, 1)
 }
 
-// --- 重连统计 ---
-
-// IncReconnectAttempts 增加重连尝试次数
 func (c *Collector) IncReconnectAttempts() {
 	atomic.AddInt64(&c.reconnectAttempts, 1)
 }
 
-// IncReconnectSuccess 增加重连成功次数
 func (c *Collector) IncReconnectSuccess() {
 	atomic.AddInt64(&c.reconnectSuccess, 1)
 }
 
-// IncReconnectFailed 增加单次重连失败次数
 func (c *Collector) IncReconnectFailed() {
 	atomic.AddInt64(&c.reconnectFailed, 1)
 }
 
-// IncReconnectGaveUp 增加放弃重连次数
 func (c *Collector) IncReconnectGaveUp() {
 	atomic.AddInt64(&c.reconnectGaveUp, 1)
 }
 
-// --- 快照获取 ---
+func (c *Collector) IncFastRehandshakeAttempts() {
+	atomic.AddInt64(&c.fastRehandshakeAttempts, 1)
+}
 
-// Snapshot 指标快照
+func (c *Collector) IncFastRehandshakeSuccess() {
+	atomic.AddInt64(&c.fastRehandshakeSuccess, 1)
+}
+
+func (c *Collector) IncFastRehandshakeFailed() {
+	atomic.AddInt64(&c.fastRehandshakeFailed, 1)
+}
+
+// Snapshot represents a point-in-time metrics snapshot.
 type Snapshot struct {
-	// 运行时间
 	Uptime time.Duration
 
-	// 连接统计
 	ConnectionsTotal    int64
 	ConnectionsFailed   int64
 	ConnectionsActive   int64
@@ -209,41 +186,38 @@ type Snapshot struct {
 	HandshakesFailed    int64
 	AvgHandshakeLatency time.Duration
 
-	// 流量统计
 	BytesSent     int64
 	BytesReceived int64
 	PacketsSent   int64
 	PacketsRecv   int64
 
-	// NAT 打洞统计
 	PunchAttemptsUDP int64
 	PunchSuccessUDP  int64
 	PunchAttemptsTCP int64
 	PunchSuccessTCP  int64
-	PunchSuccessRate float64 // 打洞成功率
+	PunchSuccessRate float64
 
-	// 中继统计
 	RelayPackets    int64
 	RelayBytes      int64
 	RelayConnects   int64
 	RelayAuthFailed int64
 
-	// 错误统计
 	ErrorsTotal int64
 
-	// 重连统计
-	ReconnectAttempts int64   // 重连尝试次数
-	ReconnectSuccess  int64   // 重连成功次数
-	ReconnectFailed   int64   // 重连失败次数
-	ReconnectGaveUp   int64   // 放弃重连次数
-	ReconnectRate     float64 // 重连成功率
+	ReconnectAttempts int64
+	ReconnectSuccess  int64
+	ReconnectFailed   int64
+	ReconnectGaveUp   int64
+	ReconnectRate     float64
 
-	// 计算的速率
+	FastRehandshakeAttempts int64
+	FastRehandshakeSuccess  int64
+	FastRehandshakeFailed   int64
+
 	BytesSentPerSec int64
 	BytesRecvPerSec int64
 }
 
-// GetSnapshot 获取当前指标快照
 func (c *Collector) GetSnapshot() Snapshot {
 	s := Snapshot{
 		Uptime: time.Since(c.startTime),
@@ -276,23 +250,24 @@ func (c *Collector) GetSnapshot() Snapshot {
 		ReconnectSuccess:  atomic.LoadInt64(&c.reconnectSuccess),
 		ReconnectFailed:   atomic.LoadInt64(&c.reconnectFailed),
 		ReconnectGaveUp:   atomic.LoadInt64(&c.reconnectGaveUp),
+
+		FastRehandshakeAttempts: atomic.LoadInt64(&c.fastRehandshakeAttempts),
+		FastRehandshakeSuccess:  atomic.LoadInt64(&c.fastRehandshakeSuccess),
+		FastRehandshakeFailed:   atomic.LoadInt64(&c.fastRehandshakeFailed),
 	}
 
-	// 计算平均握手延迟
 	count := atomic.LoadInt64(&c.handshakeCount)
 	if count > 0 {
 		totalNs := atomic.LoadInt64(&c.handshakeLatencyNs)
 		s.AvgHandshakeLatency = time.Duration(totalNs / count)
 	}
 
-	// 计算打洞成功率
 	totalAttempts := s.PunchAttemptsUDP + s.PunchAttemptsTCP
 	totalSuccess := s.PunchSuccessUDP + s.PunchSuccessTCP
 	if totalAttempts > 0 {
 		s.PunchSuccessRate = float64(totalSuccess) / float64(totalAttempts)
 	}
 
-	// 计算重连成功率
 	if s.ReconnectAttempts > 0 {
 		s.ReconnectRate = float64(s.ReconnectSuccess) / float64(s.ReconnectAttempts)
 	}
@@ -300,7 +275,6 @@ func (c *Collector) GetSnapshot() Snapshot {
 	return s
 }
 
-// Reset 重置所有指标
 func (c *Collector) Reset() {
 	atomic.StoreInt64(&c.connectionsTotal, 0)
 	atomic.StoreInt64(&c.connectionsFailed, 0)
@@ -333,8 +307,12 @@ func (c *Collector) Reset() {
 	atomic.StoreInt64(&c.reconnectFailed, 0)
 	atomic.StoreInt64(&c.reconnectGaveUp, 0)
 
+	atomic.StoreInt64(&c.fastRehandshakeAttempts, 0)
+	atomic.StoreInt64(&c.fastRehandshakeSuccess, 0)
+	atomic.StoreInt64(&c.fastRehandshakeFailed, 0)
+
 	c.startTime = time.Now()
 }
 
-// Global 全局指标收集器
+// Global is the process-level metrics collector.
 var Global = NewCollector()
