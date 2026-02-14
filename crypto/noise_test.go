@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"bytes"
+	"errors"
 	"sync"
 	"testing"
 )
@@ -170,6 +171,31 @@ func TestSessionClose(t *testing.T) {
 	}
 	if session1.sendCipher != nil || session1.recvCipher != nil {
 		t.Error("关闭后 cipher 应为 nil")
+	}
+}
+
+func TestSessionEncryptAfterClose(t *testing.T) {
+	session1, _ := createSessionPair(t)
+	session1.Close()
+
+	_, err := session1.Encrypt([]byte("hello"))
+	if !errors.Is(err, ErrSessionClosed) {
+		t.Fatalf("Encrypt after Close should return ErrSessionClosed, got: %v", err)
+	}
+}
+
+func TestSessionDecryptAfterClose(t *testing.T) {
+	session1, session2 := createSessionPair(t)
+	ciphertext, err := session2.Encrypt([]byte("hello"))
+	if err != nil {
+		t.Fatalf("Encrypt failed: %v", err)
+	}
+
+	session1.Close()
+
+	_, err = session1.Decrypt(ciphertext)
+	if !errors.Is(err, ErrSessionClosed) {
+		t.Fatalf("Decrypt after Close should return ErrSessionClosed, got: %v", err)
 	}
 }
 

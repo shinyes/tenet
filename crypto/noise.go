@@ -5,12 +5,15 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/flynn/noise"
 )
+
+var ErrSessionClosed = errors.New("session closed")
 
 // NoiseConfig Noise协议配置
 var NoiseConfig = noise.Config{
@@ -227,6 +230,10 @@ func (s *Session) Encrypt(plaintext []byte) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.sendCipher == nil {
+		return nil, ErrSessionClosed
+	}
+
 	// Noise CipherState.Encrypt 已经处理了nonce
 	ciphertext, err := s.sendCipher.Encrypt(nil, nil, plaintext)
 	if err != nil {
@@ -240,6 +247,10 @@ func (s *Session) Encrypt(plaintext []byte) ([]byte, error) {
 func (s *Session) Decrypt(ciphertext []byte) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.recvCipher == nil {
+		return nil, ErrSessionClosed
+	}
 
 	plaintext, err := s.recvCipher.Decrypt(nil, nil, ciphertext)
 	if err != nil {
