@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-02-14
+
+### Added
+- 新增 fast re-handshake 快速恢复路径：连续解密失败达到阈值后可立即重握手
+- 新增 fast re-handshake 观测指标：`FastRehandshakeAttempts`、`FastRehandshakeSuccess`、`FastRehandshakeFailed`
+- 新增 fast re-handshake 相关配置项：
+  - `WithFastRehandshakeBackoff`
+  - `WithFastRehandshakeWindow`
+  - `WithFastRehandshakeFailThreshold`
+  - `WithFastRehandshakePendingTTL`
+
+### Changed
+- 业务数据面仅使用可靠通道（TCP/KCP），不再回退裸 UDP
+- 强化重握手流程：增加 pending handshake 冲突保护、退避与窗口限次、失败阈值后回退 reconnect
+- 扩展测试覆盖：增加恢复后业务收发、配置校验、指标与退避逻辑相关测试
+
+### Docs
+- 重构 README 阅读路径，补充快速上手、排错速查与常用配置详解
+- 更新 USER_GUIDE，增加快速恢复机制与配置说明
+
 ## [1.1.1] - 2026-02-14
 
 ### Fixed
