@@ -206,8 +206,11 @@ func (n *Node) handleAppFrame(peerID string, p *peer.Peer, data []byte) {
 		}
 
 		// 回调上层
-		if n.onReceive != nil {
-			n.onReceive(peerID, userData)
+		n.mu.RLock()
+		onReceive := n.onReceive
+		n.mu.RUnlock()
+		if onReceive != nil {
+			onReceive(peerID, userData)
 		}
 
 	case AppFrameTypeChannelUpdate:
@@ -241,13 +244,14 @@ func (n *Node) sendAppFrame(peerID string, appFrameType byte, data []byte) error
 	if !ok {
 		return fmt.Errorf("未找到对等节点: %s", peerID)
 	}
-	if p.Session == nil {
+	session := p.GetSession()
+	if session == nil {
 		return fmt.Errorf("对等节点会话未建立")
 	}
 
 	// === 1. 确定传输通道 (Writer) ===
 	var sendFunc func(payload []byte) error
-	transport, _, conn := p.GetTransportInfo()
+	transport, addr, conn := p.GetTransportInfo()
 
 	if transport == "tcp" && conn != nil {
 		sendFunc = func(payload []byte) error {
@@ -258,7 +262,6 @@ func (n *Node) sendAppFrame(peerID string, appFrameType byte, data []byte) error
 			return n.kcpTransport.Send(p.ID, payload)
 		}
 	} else if transport == "udp" {
-		addr := p.Addr
 		if udpAddr, ok := addr.(*net.UDPAddr); ok && n.kcpTransport != nil {
 			if err := n.kcpTransport.UpgradePeer(p.ID, udpAddr); err == nil {
 				sendFunc = func(payload []byte) error {
@@ -289,7 +292,7 @@ func (n *Node) sendAppFrame(peerID string, appFrameType byte, data []byte) error
 		plainFrame[0] = frameType
 		copy(plainFrame[1:], fragmentData)
 
-		encrypted, err := p.Session.Encrypt(plainFrame)
+		encrypted, err := session.Encrypt(plainFrame)
 		if err != nil {
 			return err
 		}

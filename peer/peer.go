@@ -160,6 +160,20 @@ func (p *Peer) GetTransportInfo() (string, net.Addr, net.Conn) {
 	return p.Transport, p.Addr, p.Conn
 }
 
+// GetSession returns the current crypto session.
+func (p *Peer) GetSession() *crypto.Session {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.Session
+}
+
+// GetLinkMode returns current link mode.
+func (p *Peer) GetLinkMode() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.LinkMode
+}
+
 // UpdateLastSeen updates the last seen timestamp
 func (p *Peer) UpdateLastSeen() {
 	p.mu.Lock()

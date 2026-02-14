@@ -69,7 +69,7 @@ type Node struct {
 	onPeerConnected    func(peerID string)
 	onPeerDisconnected func(peerID string)
 	mu                 sync.RWMutex
-	tcpWriteMu         sync.Mutex
+	tcpWriteMuMap      sync.Map // map[net.Conn]*sync.Mutex
 
 	closing chan struct{}
 	wg      sync.WaitGroup
@@ -598,7 +598,8 @@ func (n *Node) sendLegacy(peerID string, data []byte) error {
 	if !ok {
 		return fmt.Errorf("未找到对等节点: %s", peerID)
 	}
-	if p.Session == nil {
+	session := p.GetSession()
+	if session == nil {
 		return fmt.Errorf("对等节点会话未建立")
 	}
 
@@ -606,7 +607,7 @@ func (n *Node) sendLegacy(peerID string, data []byte) error {
 	// 必须在发送前锁定通过，并在整个 Send 过程中保持不变，防止中途切换导致乱序
 	var sendFunc func(payload []byte) error
 
-	transport, _, conn := p.GetTransportInfo()
+	transport, addr, conn := p.GetTransportInfo()
 
 	// 优先使用 TCP
 	if transport == "tcp" && conn != nil {
@@ -620,7 +621,6 @@ func (n *Node) sendLegacy(peerID string, data []byte) error {
 		}
 	} else if transport == "udp" {
 		// 尝试建立 KCP
-		addr := p.Addr
 		if udpAddr, ok := addr.(*net.UDPAddr); ok && n.kcpTransport != nil {
 			if err := n.kcpTransport.UpgradePeer(p.ID, udpAddr); err == nil {
 				// 升级成功，锁定使用 KCP
@@ -644,7 +644,7 @@ func (n *Node) sendLegacy(peerID string, data []byte) error {
 		plainFrame[0] = frameType
 		copy(plainFrame[1:], payload)
 
-		encrypted, err := p.Session.Encrypt(plainFrame)
+		encrypted, err := session.Encrypt(plainFrame)
 		if err != nil {
 			return err
 		}
@@ -713,6 +713,7 @@ func (n *Node) acceptTCP() {
 
 // handleTCP 处理 TCP 入站连接
 func (n *Node) handleTCP(conn net.Conn) {
+	defer n.releaseTCPWriteMutex(conn)
 	defer conn.Close()
 
 	// 设置 TCP KeepAlive
@@ -915,14 +916,6 @@ func (n *Node) processData(remoteAddr net.Addr, payload []byte) {
 		n.metrics.AddBytesReceived(int64(len(frameData)))
 	}
 
-	n.mu.RLock()
-	onReceive := n.onReceive
-	n.mu.RUnlock()
-
-	if onReceive == nil {
-		return
-	}
-
 	switch frameType {
 	case FrameTypeSingle:
 		// 单包: 直接回调
@@ -997,10 +990,24 @@ func (n *Node) sendRaw(conn net.Conn, addr net.Addr, transport string, packet []
 
 func (n *Node) writeTCPPacket(conn net.Conn, packet []byte) error {
 	frame := protocol.EncodeTCPFrame(packet)
-	n.tcpWriteMu.Lock()
-	defer n.tcpWriteMu.Unlock()
+	mu := n.getTCPWriteMutex(conn)
+	mu.Lock()
+	defer mu.Unlock()
 	_, err := conn.Write(frame)
 	return err
+}
+
+func (n *Node) getTCPWriteMutex(conn net.Conn) *sync.Mutex {
+	if mu, ok := n.tcpWriteMuMap.Load(conn); ok {
+		return mu.(*sync.Mutex)
+	}
+	newMu := &sync.Mutex{}
+	actual, _ := n.tcpWriteMuMap.LoadOrStore(conn, newMu)
+	return actual.(*sync.Mutex)
+}
+
+func (n *Node) releaseTCPWriteMutex(conn net.Conn) {
+	n.tcpWriteMuMap.Delete(conn)
 }
 
 // GetPeerTransport 返回对端使用的传输协议
@@ -1009,10 +1016,11 @@ func (n *Node) GetPeerTransport(peerID string) string {
 	if !ok {
 		return ""
 	}
-	if p.Transport == "" {
+	transport, _, _ := p.GetTransportInfo()
+	if transport == "" {
 		return "udp"
 	}
-	return p.Transport
+	return transport
 }
 
 // GetPeerLinkMode 返回与对端的链路模式（p2p/relay）
@@ -1021,10 +1029,11 @@ func (n *Node) GetPeerLinkMode(peerID string) string {
 	if !ok {
 		return ""
 	}
-	if p.LinkMode == "" {
+	linkMode := p.GetLinkMode()
+	if linkMode == "" {
 		return "p2p"
 	}
-	return p.LinkMode
+	return linkMode
 }
 
 // GetMetrics 获取节点指标快照
