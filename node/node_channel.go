@@ -119,8 +119,10 @@ func (n *Node) processChannelUpdate(p *peer.Peer, payload []byte) {
 // Broadcast 向指定频道广播数据
 func (n *Node) Broadcast(channelName string, data []byte) (int, error) {
 	peers := n.GetPeersInChannel(channelName)
-	if len(peers) == 0 {
-		return 0, nil
+	// 兜底策略：频道同步尚未完成时，先发给所有已连接节点，
+	// 由接收端基于频道订阅做最终过滤，避免“同频道但短时间内广播为0”。
+	if len(peers) == 0 && n.Config.EnableBroadcastFallback {
+		peers = n.Peers.IDs()
 	}
 
 	successCount := 0
@@ -216,6 +218,10 @@ func (n *Node) handleAppFrame(peerID string, p *peer.Peer, data []byte) {
 
 // Send 向对等节点发送数据 (指定频道)
 func (n *Node) Send(channelName string, peerID string, data []byte) error {
+	if !n.isChannelSubscribed(hashChannelName(channelName)) {
+		return fmt.Errorf("节点未订阅频道: %s", channelName)
+	}
+
 	// 组合帧: [ChannelHash(32)] [UserData]
 	channelHash := hashChannelName(channelName)
 	frame := make([]byte, 32+len(data))
@@ -245,13 +251,7 @@ func (n *Node) sendAppFrame(peerID string, appFrameType byte, data []byte) error
 
 	if transport == "tcp" && conn != nil {
 		sendFunc = func(payload []byte) error {
-			length := uint16(len(payload))
-			frame := make([]byte, 2+len(payload))
-			frame[0] = byte(length >> 8)
-			frame[1] = byte(length)
-			copy(frame[2:], payload)
-			_, err := conn.Write(frame)
-			return err
+			return n.writeTCPPacket(conn, payload)
 		}
 	} else if n.kcpTransport != nil && n.kcpTransport.HasSession(p.ID) {
 		sendFunc = func(payload []byte) error {
@@ -266,14 +266,14 @@ func (n *Node) sendAppFrame(peerID string, appFrameType byte, data []byte) error
 				}
 			} else {
 				sendFunc = func(payload []byte) error {
-					n.tentConn.WriteTo(payload, udpAddr)
-					return nil
+					_, err := n.tentConn.WriteTo(payload, udpAddr)
+					return err
 				}
 			}
 		} else if udpAddr, ok := addr.(*net.UDPAddr); ok {
 			sendFunc = func(payload []byte) error {
-				n.tentConn.WriteTo(payload, udpAddr)
-				return nil
+				_, err := n.tentConn.WriteTo(payload, udpAddr)
+				return err
 			}
 		}
 	}

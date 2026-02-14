@@ -69,6 +69,7 @@ type Node struct {
 	onPeerConnected    func(peerID string)
 	onPeerDisconnected func(peerID string)
 	mu                 sync.RWMutex
+	tcpWriteMu         sync.Mutex
 
 	closing chan struct{}
 	wg      sync.WaitGroup
@@ -499,14 +500,7 @@ func (n *Node) Connect(addrStr string) error {
 	case res := <-resultChan:
 		if res.Transport == "tcp" && res.Conn != nil {
 			// TCP 成功
-			length := uint16(len(packetTCP))
-			frame := make([]byte, 2+len(packetTCP))
-			frame[0] = byte(length >> 8)
-			frame[1] = byte(length)
-			copy(frame[2:], packetTCP)
-
-			_, err := res.Conn.Write(frame)
-			if err != nil {
+			if err := n.writeTCPPacket(res.Conn, packetTCP); err != nil {
 				res.Conn.Close()
 				return err
 			}
@@ -547,14 +541,7 @@ func (n *Node) Connect(addrStr string) error {
 						return
 					case res2 := <-resultChan:
 						if res2.Transport == "tcp" && res2.Conn != nil {
-							length := uint16(len(packetTCP))
-							frame := make([]byte, 2+len(packetTCP))
-							frame[0] = byte(length >> 8)
-							frame[1] = byte(length)
-							copy(frame[2:], packetTCP)
-
-							_, err := res2.Conn.Write(frame)
-							if err != nil {
+							if err := n.writeTCPPacket(res2.Conn, packetTCP); err != nil {
 								res2.Conn.Close()
 								return
 							}
@@ -624,14 +611,7 @@ func (n *Node) sendLegacy(peerID string, data []byte) error {
 	// 优先使用 TCP
 	if transport == "tcp" && conn != nil {
 		sendFunc = func(payload []byte) error {
-			// 封装帧长度头 (2 bytes)
-			length := uint16(len(payload))
-			frame := make([]byte, 2+len(payload))
-			frame[0] = byte(length >> 8)
-			frame[1] = byte(length)
-			copy(frame[2:], payload)
-			_, err := conn.Write(frame)
-			return err
+			return n.writeTCPPacket(conn, payload)
 		}
 	} else if n.kcpTransport != nil && n.kcpTransport.HasSession(p.ID) {
 		// 只要有 KCP 会话就优先使用
@@ -1002,8 +982,7 @@ func (n *Node) processData(remoteAddr net.Addr, payload []byte) {
 // sendRaw 发送原始包（用于握手）
 func (n *Node) sendRaw(conn net.Conn, addr net.Addr, transport string, packet []byte) error {
 	if transport == "tcp" && conn != nil {
-		frame := protocol.EncodeTCPFrame(packet)
-		if _, err := conn.Write(frame); err != nil {
+		if err := n.writeTCPPacket(conn, packet); err != nil {
 			return fmt.Errorf("TCP write error: %w", err)
 		}
 		return nil
@@ -1014,6 +993,14 @@ func (n *Node) sendRaw(conn net.Conn, addr net.Addr, transport string, packet []
 		return nil
 	}
 	return fmt.Errorf("不支持的传输或无效地址")
+}
+
+func (n *Node) writeTCPPacket(conn net.Conn, packet []byte) error {
+	frame := protocol.EncodeTCPFrame(packet)
+	n.tcpWriteMu.Lock()
+	defer n.tcpWriteMu.Unlock()
+	_, err := conn.Write(frame)
+	return err
 }
 
 // GetPeerTransport 返回对端使用的传输协议

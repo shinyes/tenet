@@ -147,6 +147,9 @@ func (t *KCPTransport) UpgradePeer(peerID string, remoteAddr *net.UDPAddr) error
 	}
 
 	t.sessions.Store(peerID, session)
+	t.node.mu.Lock()
+	t.node.addrToPeer[remoteAddrStr] = peerID
+	t.node.mu.Unlock()
 	t.node.Config.Logger.Info("节点 %s 已升级到 KCP 传输", peerID[:8])
 
 	// 启动读取循环

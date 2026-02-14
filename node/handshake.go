@@ -129,7 +129,18 @@ func (n *Node) processHandshake(conn net.Conn, remoteAddr net.Addr, transport st
 
 		go n.syncChannelsWithPeer(peerID)
 		if onConnected != nil {
-			go onConnected(peerID)
+			notifyDelay := time.Duration(0)
+			// UDP 发起方在发送最后一个握手包后，短时间内对端可能尚未完成握手。
+			// 这里做一个很小的延迟，避免应用层在回调里立刻发数据被对端丢弃。
+			if transport == "udp" && response != nil {
+				notifyDelay = 200 * time.Millisecond
+			}
+			go func() {
+				if notifyDelay > 0 {
+					time.Sleep(notifyDelay)
+				}
+				onConnected(peerID)
+			}()
 		}
 	}
 }

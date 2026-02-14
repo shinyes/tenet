@@ -5,40 +5,40 @@ import (
 	"net"
 	"time"
 
-	"github.com/shinyes/tenet/crypto" // Added crypto import
+	"github.com/shinyes/tenet/crypto"
 	"github.com/shinyes/tenet/log"
 )
 
 // Config 节点配置
 type Config struct {
-	// 网络密码，用于验证节点是否属于同一网络
+	// 网络密码：用于校验节点是否属于同一网络（必填）
 	NetworkPassword string
 
-	// UDP 监听端口，0表示自动分配
+	// UDP 监听端口，0 表示自动分配
 	ListenPort int
 
 	// 连接超时
 	DialTimeout time.Duration
 
-	// 心跳间隔
+	// 心跳发送间隔
 	HeartbeatInterval time.Duration
 
-	// 心跳超时（多久没收到心跳视为断开）
+	// 心跳超时（超过该时间未收到心跳，视为断开）
 	HeartbeatTimeout time.Duration
 
-	// 是否启用NAT打洞
+	// 是否启用 NAT 打洞
 	EnableHolePunch bool
 
-	// 是否允许作为中继节点
+	// 是否启用中继能力
 	EnableRelay bool
 
-	// 预设中继节点地址（host:port）
+	// 预置中继节点地址（host:port）
 	RelayNodes []string
 
 	// 最大连接数
 	MaxPeers int
 
-	// 日志记录器，默认静默（NopLogger）
+	// 日志器（默认 Nop）
 	Logger log.Logger
 
 	// 是否启用中继认证
@@ -47,22 +47,25 @@ type Config struct {
 	// 中继认证令牌有效期
 	RelayAuthTTL time.Duration
 
-	// 身份信息
+	// 节点身份
 	Identity *crypto.Identity
 
-	// KCP 配置（nil 则使用默认平衡模式）
+	// KCP 配置（nil 表示使用默认配置）
 	KCPConfig *KCPConfig
 
 	// 是否启用自动重连
 	EnableReconnect bool
 
-	// 重连配置（nil 则使用默认配置）
+	// 重连配置（nil 表示使用默认配置）
 	ReconnectConfig *ReconnectConfig
 
-	// 频道列表 (可选)
-	// 存储已订阅频道的名称（字符串）
-	// 注意：传输时会使用 Hash(ChannelName) 作为 ID
+	// 本地订阅的频道名称列表
 	Channels []string
+
+	// 广播兜底开关：
+	// 当频道匹配结果为空时，是否退化为向所有已连接节点发送，
+	// 再由接收端按频道过滤。
+	EnableBroadcastFallback bool
 }
 
 // DefaultConfig 返回默认配置
@@ -82,67 +85,62 @@ func DefaultConfig() *Config {
 		EnableRelayAuth:   true,
 		RelayAuthTTL:      5 * time.Minute,
 
-		KCPConfig:       nil,  // 使用默认平衡模式
-		EnableReconnect: true, // 默认启用自动重连
-		ReconnectConfig: nil,  // 使用默认重连配置
+		KCPConfig:               nil,
+		EnableReconnect:         true,
+		ReconnectConfig:         nil,
+		EnableBroadcastFallback: true,
 	}
 }
 
-// Validate 验证配置参数的有效性
+// Validate 校验配置参数
 func (c *Config) Validate() error {
 	var errs []error
 
-	// 检查网络密码（必须配置）
+	// 网络密码必填
 	if c.NetworkPassword == "" {
 		errs = append(errs, errors.New("必须配置网络密码 (NetworkPassword)"))
 	}
 
-	// 检查端口范围
+	// 端口范围
 	if c.ListenPort < 0 || c.ListenPort > 65535 {
 		errs = append(errs, errors.New("ListenPort must be between 0 and 65535"))
 	}
 
-	// 检查超时配置
+	// 超时配置
 	if c.DialTimeout <= 0 {
 		errs = append(errs, errors.New("DialTimeout must be positive"))
 	}
-
 	if c.HeartbeatInterval <= 0 {
 		errs = append(errs, errors.New("HeartbeatInterval must be positive"))
 	}
-
 	if c.HeartbeatTimeout <= 0 {
 		errs = append(errs, errors.New("HeartbeatTimeout must be positive"))
 	}
-
-	// 心跳超时应该大于心跳间隔
 	if c.HeartbeatTimeout <= c.HeartbeatInterval {
 		errs = append(errs, errors.New("HeartbeatTimeout must be greater than HeartbeatInterval"))
 	}
-
-	// 心跳超时应至少为心跳间隔的 2 倍
 	if c.HeartbeatTimeout < 2*c.HeartbeatInterval {
 		errs = append(errs, errors.New("HeartbeatTimeout should be at least 2x HeartbeatInterval for reliability"))
 	}
 
-	// 检查最大连接数
+	// 连接数
 	if c.MaxPeers < 1 {
 		errs = append(errs, errors.New("MaxPeers must be at least 1"))
 	}
 
-	// 检查中继认证 TTL
+	// 中继认证 TTL
 	if c.EnableRelayAuth && c.RelayAuthTTL <= 0 {
 		errs = append(errs, errors.New("RelayAuthTTL must be positive when EnableRelayAuth is true"))
 	}
 
-	// 检查中继节点地址格式
+	// 中继地址格式
 	for _, addr := range c.RelayNodes {
 		if _, err := net.ResolveUDPAddr("udp", addr); err != nil {
 			errs = append(errs, errors.New("invalid relay address: "+addr))
 		}
 	}
 
-	// 检查日志器
+	// 日志器兜底
 	if c.Logger == nil {
 		c.Logger = log.Nop()
 	}
@@ -153,7 +151,7 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// Option 配置选项函数
+// Option 配置项函数
 type Option func(*Config)
 
 // WithNetworkPassword 设置网络密码
@@ -184,14 +182,14 @@ func WithHeartbeatInterval(interval time.Duration) Option {
 	}
 }
 
-// WithEnableHolePunch 设置是否启用NAT打洞
+// WithEnableHolePunch 设置是否启用 NAT 打洞
 func WithEnableHolePunch(enable bool) Option {
 	return func(c *Config) {
 		c.EnableHolePunch = enable
 	}
 }
 
-// WithEnableRelay 设置是否允许中继
+// WithEnableRelay 设置是否启用中继
 func WithEnableRelay(enable bool) Option {
 	return func(c *Config) {
 		c.EnableRelay = enable
@@ -212,7 +210,7 @@ func WithRelayNodes(addrs []string) Option {
 	}
 }
 
-// WithLogger 设置日志记录器
+// WithLogger 设置日志器
 func WithLogger(logger log.Logger) Option {
 	return func(c *Config) {
 		if logger != nil {
@@ -285,14 +283,21 @@ func WithReconnectBackoff(initialDelay, maxDelay time.Duration, multiplier float
 	}
 }
 
-// WithChannelID 添加频道（支持多次调用添加多个频道）
+// WithChannelID 添加频道（支持多次调用）
 func WithChannelID(channelName string) Option {
 	return func(c *Config) {
 		for _, ch := range c.Channels {
 			if ch == channelName {
-				return // 已存在，去重
+				return
 			}
 		}
 		c.Channels = append(c.Channels, channelName)
+	}
+}
+
+// WithEnableBroadcastFallback 设置是否启用广播兜底
+func WithEnableBroadcastFallback(enable bool) Option {
+	return func(c *Config) {
+		c.EnableBroadcastFallback = enable
 	}
 }
