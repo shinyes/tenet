@@ -5,10 +5,10 @@ All notable changes to this project will be documented in this file.
 ## [1.3.1] - 2026-02-15
 
 ### Fixed
-- Guarded `relayAddrSet` access in `registerRelayCandidate` to avoid concurrent map read/write panics under parallel handshakes.
-- Added discovery source authentication checks so only known authenticated peers can trigger discovery request/response processing.
-- Added a hard cap and deterministic trim path for `discoveryConnectSeen` to prevent unbounded short-term growth under high-cardinality discovery inputs.
-- Expanded node tests to cover relay candidate concurrency, discovery authentication gates, and discovery seen-map hard-limit behavior.
+- 在 `registerRelayCandidate` 中保护 `relayAddrSet` 的访问，避免在并行握手时发生并发 map 读/写 panic。
+- 新增发现源认证检查，确保仅通过认证的对等方能触发发现请求/响应的处理。
+- 为 `discoveryConnectSeen` 新增上限和确定性修剪路径，防止在高基数发现输入下出现无限制的短期增长。
+- 扩展节点测试以覆盖中继候选者并发、发现认证门控以及发现 seen-map 硬限制行为。
 
 ## [1.2.0] - 2026-02-14
 
