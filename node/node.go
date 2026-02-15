@@ -97,6 +97,7 @@ type Node struct {
 
 	discoveryConnectSem  chan struct{}
 	discoveryConnectSeen map[string]time.Time
+	localChannelSet      map[[32]byte]struct{}
 }
 
 // NewNode 创建一个新的 Node 实例
@@ -125,6 +126,11 @@ func NewNode(opts ...Option) (*Node, error) {
 		}
 	}
 
+	localChannelSet := make(map[[32]byte]struct{}, len(cfg.Channels))
+	for _, ch := range cfg.Channels {
+		localChannelSet[hashChannelName(ch)] = struct{}{}
+	}
+
 	return &Node{
 		Config:             cfg,
 		Identity:           id,
@@ -142,6 +148,7 @@ func NewNode(opts ...Option) (*Node, error) {
 			discoveryConnectConcurrencyLimit,
 		),
 		discoveryConnectSeen: make(map[string]time.Time),
+		localChannelSet:      localChannelSet,
 	}, nil
 }
 
