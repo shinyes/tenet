@@ -333,8 +333,8 @@ func (rm *ReconnectManager) reconnectLoop(ctx context.Context, entry *reconnectE
 			entry.peerID[:min(8, len(entry.peerID))], entry.attempt, rm.config.MaxRetries)
 
 		// 使用带超时的 context 进行连接
-		_, cancel := context.WithTimeout(ctx, rm.config.ReconnectTimeout)
-		err := rm.node.Connect(entry.addr)
+		attemptCtx, cancel := context.WithTimeout(ctx, rm.config.ReconnectTimeout)
+		err := rm.node.ConnectContext(attemptCtx, entry.addr)
 		cancel()
 
 		if err != nil {

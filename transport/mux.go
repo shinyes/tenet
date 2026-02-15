@@ -103,6 +103,14 @@ func (m *UDPMux) readLoop() {
 
 		// 2. TENT 协议包检查
 		// TENT packets go to tentConn
+		if m.isProbePacket(data) {
+			select {
+			case m.tentConn.readChan <- packet:
+			default:
+			}
+			continue
+		}
+
 		if m.isTentPacket(data) {
 			select {
 			case m.tentConn.readChan <- packet:
@@ -149,6 +157,14 @@ func (m *UDPMux) isTentPacket(data []byte) bool {
 	}
 	// 检查前4个字节是否为 "TENT"
 	return string(data[:4]) == "TENT"
+}
+
+// isProbePacket checks whether the packet is a NAT probe packet ("NATP").
+func (m *UDPMux) isProbePacket(data []byte) bool {
+	if len(data) < 4 {
+		return false
+	}
+	return data[0] == 'N' && data[1] == 'A' && data[2] == 'T' && data[3] == 'P'
 }
 
 // RegisterKCPHandler 为特定远程地址注册 KCP 处理器

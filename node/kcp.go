@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	tenetlog "github.com/shinyes/tenet/log"
 	"github.com/xtaci/kcp-go/v5"
 )
 
@@ -57,6 +58,7 @@ type KCPManager struct {
 	listener *kcp.Listener
 	sessions map[string]*KCPSession // peerAddr -> session
 	config   *KCPConfig
+	logger   tenetlog.Logger
 	mu       sync.RWMutex
 	closing  chan struct{}
 
@@ -65,13 +67,18 @@ type KCPManager struct {
 }
 
 // NewKCPManager 创建 KCP 管理器
-func NewKCPManager(config *KCPConfig) *KCPManager {
+func NewKCPManager(config *KCPConfig, logger ...tenetlog.Logger) *KCPManager {
 	if config == nil {
 		config = DefaultKCPConfig()
+	}
+	l := tenetlog.Nop()
+	if len(logger) > 0 && logger[0] != nil {
+		l = logger[0]
 	}
 	return &KCPManager{
 		sessions: make(map[string]*KCPSession),
 		config:   config,
+		logger:   l,
 		closing:  make(chan struct{}),
 	}
 }
@@ -107,7 +114,7 @@ func (m *KCPManager) Listen(port int) error {
 func (m *KCPManager) ListenOnConn(conn net.PacketConn) error {
 	listener, err := kcp.ServeConn(nil, 0, 0, conn)
 	if err != nil {
-		fmt.Printf("DEBUG: ServeConn failed: %v\n", err)
+		m.logger.Error("KCP ServeConn failed: %v", err)
 		return err
 	}
 
@@ -115,10 +122,10 @@ func (m *KCPManager) ListenOnConn(conn net.PacketConn) error {
 
 	// 应用缓冲区配置
 	if err := listener.SetReadBuffer(4 * 1024 * 1024); err != nil {
-		fmt.Printf("WARNING: SetReadBuffer failed: %v\n", err)
+		m.logger.Warn("KCP SetReadBuffer failed: %v", err)
 	}
 	if err := listener.SetWriteBuffer(4 * 1024 * 1024); err != nil {
-		fmt.Printf("WARNING: SetWriteBuffer failed: %v\n", err)
+		m.logger.Warn("KCP SetWriteBuffer failed: %v", err)
 	}
 
 	return nil

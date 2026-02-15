@@ -87,6 +87,74 @@ type Peer struct {
 	rehandshakeWindowCount      int
 }
 
+// ResetReassembly clears fragment reassembly state.
+func (p *Peer) ResetReassembly() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.resetReassemblyLocked()
+}
+
+// StartReassembly resets and initializes reassembly buffer with the first fragment.
+func (p *Peer) StartReassembly(frameData []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.ReassemblyBuffer == nil {
+		p.ReassemblyBuffer = new(bytes.Buffer)
+	} else {
+		p.ReassemblyBuffer.Reset()
+	}
+	_, _ = p.ReassemblyBuffer.Write(frameData)
+	p.LastFrameTime = time.Now()
+}
+
+// AppendReassembly appends a middle fragment.
+// It returns whether append succeeded and whether an overflow was detected.
+func (p *Peer) AppendReassembly(frameData []byte, maxSize int) (bool, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.ReassemblyBuffer == nil {
+		return false, false
+	}
+	if p.ReassemblyBuffer.Len()+len(frameData) > maxSize {
+		p.resetReassemblyLocked()
+		return false, true
+	}
+	_, _ = p.ReassemblyBuffer.Write(frameData)
+	p.LastFrameTime = time.Now()
+	return true, false
+}
+
+// FinishReassembly appends the last fragment and returns a copy of the complete payload.
+// It returns complete payload, whether completion succeeded, and whether overflow happened.
+func (p *Peer) FinishReassembly(frameData []byte, maxSize int) ([]byte, bool, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.ReassemblyBuffer == nil {
+		return nil, false, false
+	}
+	if p.ReassemblyBuffer.Len()+len(frameData) > maxSize {
+		p.resetReassemblyLocked()
+		return nil, false, true
+	}
+	_, _ = p.ReassemblyBuffer.Write(frameData)
+
+	completeData := make([]byte, p.ReassemblyBuffer.Len())
+	copy(completeData, p.ReassemblyBuffer.Bytes())
+	p.resetReassemblyLocked()
+	return completeData, true, false
+}
+
+func (p *Peer) resetReassemblyLocked() {
+	if p.ReassemblyBuffer != nil {
+		p.ReassemblyBuffer.Reset()
+		p.ReassemblyBuffer = nil
+	}
+	p.LastFrameTime = time.Time{}
+}
+
 // UpgradeTransport safely updates the peer connection info
 func (p *Peer) UpgradeTransport(addr net.Addr, conn net.Conn, transport string, session *crypto.Session) {
 	p.sendMu.Lock()

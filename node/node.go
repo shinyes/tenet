@@ -1,7 +1,6 @@
 package node
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -95,6 +94,9 @@ type Node struct {
 	onReconnecting func(peerID string, attempt int, nextRetryIn time.Duration)
 	onReconnected  func(peerID string, attempts int)
 	onGaveUp       func(peerID string, attempts int, lastErr error)
+
+	discoveryConnectSem  chan struct{}
+	discoveryConnectSeen map[string]time.Time
 }
 
 // NewNode 创建一个新的 Node 实例
@@ -135,6 +137,11 @@ func NewNode(opts ...Option) (*Node, error) {
 		relayPendingTarget: make(map[string]*net.UDPAddr),
 		relayInbound:       make(map[string]bool),
 		metrics:            metrics.NewCollector(),
+		discoveryConnectSem: make(
+			chan struct{},
+			discoveryConnectConcurrencyLimit,
+		),
+		discoveryConnectSeen: make(map[string]time.Time),
 	}, nil
 }
 
@@ -376,8 +383,17 @@ func (n *Node) buildGoodbyePacket() []byte {
 
 // Connect 通过 TCP/UDP 打洞发起连接
 func (n *Node) Connect(addrStr string) error {
+	return n.ConnectContext(context.Background(), addrStr)
+}
+
+// ConnectContext starts TCP/UDP hole punching with context cancellation support.
+func (n *Node) ConnectContext(ctx context.Context, addrStr string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	if n.conn == nil || n.LocalAddr == nil {
-		return fmt.Errorf("节点未启动")
+		return fmt.Errorf("node not started")
 	}
 	rUDPAddr, err := net.ResolveUDPAddr("udp", addrStr)
 	if err != nil {
@@ -388,7 +404,7 @@ func (n *Node) Connect(addrStr string) error {
 		return err
 	}
 
-	// 准备握手数据（UDP）
+	// Prepare handshake payloads for UDP and TCP.
 	hsUDP, msgUDP, err := crypto.NewInitiatorHandshake(
 		n.Identity.NoisePrivateKey[:],
 		n.Identity.NoisePublicKey[:],
@@ -398,7 +414,6 @@ func (n *Node) Connect(addrStr string) error {
 		return err
 	}
 
-	// 准备握手数据（TCP）
 	hsTCP, msgTCP, err := crypto.NewInitiatorHandshake(
 		n.Identity.NoisePrivateKey[:],
 		n.Identity.NoisePublicKey[:],
@@ -408,19 +423,16 @@ func (n *Node) Connect(addrStr string) error {
 		return err
 	}
 
-	// 构造握手包（UDP）
 	packetUDP := make([]byte, 5+len(msgUDP))
 	copy(packetUDP[0:4], []byte("TENT"))
 	packetUDP[4] = PacketTypeHandshake
 	copy(packetUDP[5:], msgUDP)
 
-	// 构造握手包（TCP）
 	packetTCP := make([]byte, 5+len(msgTCP))
 	copy(packetTCP[0:4], []byte("TENT"))
 	packetTCP[4] = PacketTypeHandshake
 	copy(packetTCP[5:], msgTCP)
 
-	// 注册待处理握手状态（发起方），按传输前缀区分
 	udpStateKey := "udp://" + rUDPAddr.String()
 	tcpStateKey := "tcp://" + rTCPAddr.String()
 
@@ -431,7 +443,6 @@ func (n *Node) Connect(addrStr string) error {
 	}
 	n.mu.Unlock()
 
-	// 设置握手超时清理（30秒后自动清理未完成的握手状态）
 	go func() {
 		time.Sleep(30 * time.Second)
 		n.mu.Lock()
@@ -440,45 +451,37 @@ func (n *Node) Connect(addrStr string) error {
 		n.mu.Unlock()
 	}()
 
-	// --- 策略：TCP 与 UDP 同时尝试 ---
-
-	type ConnectResult struct {
+	type connectResult struct {
 		Conn      net.Conn
 		Transport string
 		Err       error
 	}
-	resultChan := make(chan ConnectResult, 2)
+	resultChan := make(chan connectResult, 2)
 
-	// 使用可取消的 context，在节点关闭时取消打洞
-	punchCtx, punchCancel := context.WithCancel(context.Background())
-	defer punchCancel() // 确保在函数返回时取消 context
+	punchCtx, punchCancel := context.WithCancel(ctx)
+	defer punchCancel()
 
 	go func() {
 		select {
 		case <-n.closing:
 			punchCancel()
 		case <-punchCtx.Done():
-			// context 已取消，退出
-		case <-time.After(15 * time.Second):
-			punchCancel()
 		}
 	}()
 
-	// 1. TCP 打洞
 	go func() {
-		ctx, cancel := context.WithTimeout(punchCtx, 10*time.Second)
+		tcpCtx, cancel := context.WithTimeout(punchCtx, 10*time.Second)
 		defer cancel()
 
 		puncher := nat.NewTCPHolePuncher()
-		conn, err := puncher.Punch(ctx, n.tcpLocalPort, rTCPAddr)
+		conn, err := puncher.Punch(tcpCtx, n.tcpLocalPort, rTCPAddr)
 		if err != nil {
-			resultChan <- ConnectResult{Err: err}
+			resultChan <- connectResult{Transport: "tcp", Err: err}
 			return
 		}
-		resultChan <- ConnectResult{Conn: conn, Transport: "tcp"}
+		resultChan <- connectResult{Conn: conn, Transport: "tcp"}
 	}()
 
-	// 2. UDP 打洞（简单发送）
 	go func() {
 		timeout := time.After(2 * time.Second)
 		for {
@@ -486,100 +489,110 @@ func (n *Node) Connect(addrStr string) error {
 			case <-punchCtx.Done():
 				return
 			case <-timeout:
-				resultChan <- ConnectResult{Transport: "udp"}
+				resultChan <- connectResult{Transport: "udp"}
 				return
 			default:
-				n.conn.WriteToUDP(packetUDP, rUDPAddr)
+				_, _ = n.conn.WriteToUDP(packetUDP, rUDPAddr)
 				time.Sleep(200 * time.Millisecond)
 			}
 		}
 	}()
 
-	// 等待第一个可用结果
-	select {
-	case res := <-resultChan:
-		if res.Transport == "tcp" && res.Conn != nil {
-			// TCP 成功
-			if err := n.writeTCPPacket(res.Conn, packetTCP); err != nil {
-				res.Conn.Close()
-				return err
-			}
+	connectTimeout := n.Config.DialTimeout
+	if connectTimeout <= 0 {
+		connectTimeout = 5 * time.Second
+	}
+	timeout := time.NewTimer(connectTimeout)
+	defer timeout.Stop()
 
-			go n.handleTCP(res.Conn)
-			return nil
-		} else if res.Transport == "udp" {
-			// UDP 已发送，处理可能的 TCP 迟到成功
-			if n.Config.EnableRelay {
-				addrKey := rUDPAddr.String()
-				go func() {
-					select {
-					case <-n.closing:
-						return
-					case <-time.After(n.Config.DialTimeout):
+	var tcpErr error
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-n.closing:
+			return fmt.Errorf("node is closing")
+		case res := <-resultChan:
+			switch res.Transport {
+			case "tcp":
+				if res.Conn != nil {
+					if err := n.writeTCPPacket(res.Conn, packetTCP); err != nil {
+						res.Conn.Close()
+						return err
 					}
-					n.mu.RLock()
-					_, ok := n.addrToPeer[addrKey]
-					n.mu.RUnlock()
-					if !ok {
-						n.connectViaRelay(addrStr)
-					}
-				}()
-			}
-			go func() {
-				timeout := time.After(10 * time.Second)
-				for {
-					select {
-					case <-n.closing:
-						// 节点关闭，清理资源
+					go n.handleTCP(res.Conn)
+					return nil
+				}
+				if res.Err != nil {
+					// Keep waiting for UDP marker to avoid early failure races.
+					tcpErr = res.Err
+				}
+			case "udp":
+				if n.Config.EnableRelay {
+					addrKey := rUDPAddr.String()
+					go func() {
 						select {
-						case res2 := <-resultChan:
-							if res2.Conn != nil {
-								res2.Conn.Close()
-							}
-						default:
+						case <-n.closing:
+							return
+						case <-ctx.Done():
+							return
+						case <-time.After(n.Config.DialTimeout):
 						}
-						return
-					case res2 := <-resultChan:
-						if res2.Transport == "tcp" && res2.Conn != nil {
-							if err := n.writeTCPPacket(res2.Conn, packetTCP); err != nil {
-								res2.Conn.Close()
+						n.mu.RLock()
+						_, ok := n.addrToPeer[addrKey]
+						n.mu.RUnlock()
+						if !ok {
+							n.connectViaRelay(addrStr)
+						}
+					}()
+				}
+				go func() {
+					lateTimeout := time.NewTimer(10 * time.Second)
+					defer lateTimeout.Stop()
+					for {
+						select {
+						case <-n.closing:
+							return
+						case <-ctx.Done():
+							return
+						case res2 := <-resultChan:
+							if res2.Transport == "tcp" && res2.Conn != nil {
+								if err := n.writeTCPPacket(res2.Conn, packetTCP); err != nil {
+									res2.Conn.Close()
+									return
+								}
+								go n.handleTCP(res2.Conn)
 								return
 							}
-							go n.handleTCP(res2.Conn)
-							return
-						} else if res2.Conn != nil {
-							res2.Conn.Close()
-						}
-					case <-timeout:
-						select {
-						case res2 := <-resultChan:
 							if res2.Conn != nil {
 								res2.Conn.Close()
 							}
-						default:
+						case <-lateTimeout.C:
+							return
 						}
-						return
 					}
+				}()
+				return nil
+			default:
+				if res.Conn != nil {
+					res.Conn.Close()
 				}
-			}()
-			return nil
-		}
-		if res.Err != nil {
+				if res.Err != nil {
+					tcpErr = res.Err
+				}
+			}
+		case <-timeout.C:
 			if n.relayManager != nil {
 				if err := n.connectViaRelay(addrStr); err == nil {
 					return nil
 				}
 			}
-			return res.Err
-		}
-		return fmt.Errorf("连接失败")
-	case <-time.After(5 * time.Second):
-		if n.relayManager != nil {
-			if err := n.connectViaRelay(addrStr); err == nil {
-				return nil
+			if tcpErr != nil {
+				return tcpErr
 			}
+			return fmt.Errorf("connect timeout")
 		}
-		return fmt.Errorf("连接超时")
 	}
 }
 
@@ -827,6 +840,19 @@ func (n *Node) handleRead() {
 			continue
 		}
 
+		if count < 4 {
+			continue
+		}
+
+		// Handle NAT probe packets before TENT parsing.
+		if string(buf[0:4]) == "NATP" && n.natProber != nil {
+			resp := n.natProber.HandleProbePacket(buf[:count], udpAddr)
+			if len(resp) > 0 {
+				_, _ = n.tentConn.WriteTo(resp, udpAddr)
+			}
+			continue
+		}
+
 		if count < 5 {
 			continue
 		}
@@ -928,56 +954,35 @@ func (n *Node) processData(remoteAddr net.Addr, payload []byte) {
 	switch frameType {
 	case FrameTypeSingle:
 		// 单包: 直接回调
-		p.ReassemblyBuffer = nil // 清理之前的残包（如果有）
+		p.ResetReassembly()
 		n.handleAppFrame(peerID, p, frameData)
 
 	case FrameTypeFirst:
 		// 首包: 初始化/重置缓冲区
-		if p.ReassemblyBuffer == nil {
-			p.ReassemblyBuffer = new(bytes.Buffer)
-		} else {
-			p.ReassemblyBuffer.Reset()
-		}
-		p.ReassemblyBuffer.Write(frameData)
-		p.LastFrameTime = time.Now()
+		p.StartReassembly(frameData)
 
 	case FrameTypeMiddle:
 		// 中间包: 追加
-		if p.ReassemblyBuffer == nil {
+		ok, overflow := p.AppendReassembly(frameData, MaxReassemblySize)
+		if overflow {
+			n.Config.Logger.Warn("Peer %s 重组缓冲区溢出，丢弃", shortPeerID(peerID))
+		}
+		if !ok {
 			// 丢失了首包，忽略
 			return
 		}
-		// 安全检查: 防止内存溢出
-		if p.ReassemblyBuffer.Len()+len(frameData) > MaxReassemblySize {
-			n.Config.Logger.Warn("Peer %s 重组缓冲区溢出，丢弃", peerID[:8])
-			p.ReassemblyBuffer = nil
-			return
-		}
-		p.ReassemblyBuffer.Write(frameData)
-		p.LastFrameTime = time.Now()
 
 	case FrameTypeLast:
 		// 尾包: 追加并回调
-		if p.ReassemblyBuffer == nil {
+		completeData, ok, overflow := p.FinishReassembly(frameData, MaxReassemblySize)
+		if overflow {
+			n.Config.Logger.Warn("Peer %s 重组缓冲区溢出，丢弃", shortPeerID(peerID))
+		}
+		if !ok {
 			// 丢失了首包，忽略
 			return
 		}
-		if p.ReassemblyBuffer.Len()+len(frameData) > MaxReassemblySize {
-			n.Config.Logger.Warn("Peer %s 重组缓冲区溢出，丢弃", peerID[:8])
-			p.ReassemblyBuffer = nil
-			return
-		}
-		p.ReassemblyBuffer.Write(frameData)
-
-		// 完成重组，回调完整数据
-		completeData := make([]byte, p.ReassemblyBuffer.Len())
-		copy(completeData, p.ReassemblyBuffer.Bytes())
 		n.handleAppFrame(peerID, p, completeData)
-
-		// 重置缓冲区
-		p.ReassemblyBuffer.Reset() // 保留内存但清空内容
-		p.ReassemblyBuffer = nil   // 或者直接设为 nil 以释放大内存？
-		// 策略：设为 nil 以释放大块内存，防止长期占用
 	}
 }
 

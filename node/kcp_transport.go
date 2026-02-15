@@ -28,7 +28,7 @@ func NewKCPTransport(node *Node, config *KCPConfig, mux *transport.UDPMux) *KCPT
 		config = DefaultKCPConfig()
 	}
 	return &KCPTransport{
-		manager: NewKCPManager(config),
+		manager: NewKCPManager(config, node.Config.Logger),
 		node:    node,
 		mux:     mux,
 		closing: make(chan struct{}),

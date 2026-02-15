@@ -49,9 +49,12 @@ func TestNodeWithKCP(t *testing.T) {
 	})
 
 	// 等待连接建立
-	connected := make(chan struct{})
+	connected := make(chan struct{}, 1)
 	node1.OnPeerConnected(func(peerID string) {
-		close(connected)
+		select {
+		case connected <- struct{}{}:
+		default:
+		}
 	})
 
 	// 节点1连接节点2
@@ -147,9 +150,12 @@ func TestNodeKCPReliableTransfer(t *testing.T) {
 	})
 
 	// 等待连接建立
-	connected := make(chan struct{})
+	connected := make(chan struct{}, 1)
 	node1.OnPeerConnected(func(peerID string) {
-		close(connected)
+		select {
+		case connected <- struct{}{}:
+		default:
+		}
 	})
 
 	// 连接
@@ -275,9 +281,12 @@ func BenchmarkNodeSend(b *testing.B) {
 	// 静默接收
 	node2.OnReceive(func(peerID string, data []byte) {})
 
-	connected := make(chan struct{})
+	connected := make(chan struct{}, 1)
 	node1.OnPeerConnected(func(peerID string) {
-		close(connected)
+		select {
+		case connected <- struct{}{}:
+		default:
+		}
 	})
 
 	addr := fmt.Sprintf("127.0.0.1:%d", node2.LocalAddr.Port)
