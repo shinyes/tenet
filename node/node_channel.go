@@ -17,7 +17,6 @@ const (
 
 // 应用层帧类型 (Encrypted Payload 内)
 const (
-	AppFrameTypeUser            = 0x00 // 用户数据（无频道标志，兼容旧版本）
 	AppFrameTypeUserWithChannel = 0x02 // 用户数据（携带频道标志）
 	AppFrameTypeChannelUpdate   = 0x01 // 频道更新（内部使用）
 )
@@ -119,11 +118,6 @@ func (n *Node) processChannelUpdate(p *peer.Peer, payload []byte) {
 // Broadcast 向指定频道广播数据
 func (n *Node) Broadcast(channelName string, data []byte) (int, error) {
 	peers := n.GetPeersInChannel(channelName)
-	// 兜底策略：频道同步尚未完成时，先发给所有已连接节点，
-	// 由接收端基于频道订阅做最终过滤，避免“同频道但短时间内广播为0”。
-	if len(peers) == 0 && n.Config.EnableBroadcastFallback {
-		peers = n.Peers.IDs()
-	}
 
 	successCount := 0
 	for _, peerID := range peers {

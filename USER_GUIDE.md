@@ -1,6 +1,6 @@
 # Tenet 用户指南
 
-本文面向使用 `github.com/shinyes/tenet` 的业务开发者，重点说明“怎么接入、怎么排查、怎么配置广播兜底”。
+本文面向使用 `github.com/shinyes/tenet` 的业务开发者，重点说明“怎么接入、怎么排查、怎么配置关键参数”。
 
 ## 1. 最小接入流程
 
@@ -43,31 +43,7 @@ defer tunnel.GracefulStop()
 - 即使网络层已连通，不在同频道也无法完成业务通信
 - 频道是应用层隔离边界，不是连接层隔离边界
 
-## 3. 广播兜底开关（`EnableBroadcastFallback`）
-
-### 默认行为（推荐起步）
-
-默认 `true`。当 `Broadcast(channel, ...)` 找不到“已知在该频道的对端”时，会临时退化为向所有已连接节点发送，再由接收端按频道过滤。
-
-用途：
-
-- 缓解连接刚建立、频道同步尚未完成时的“同频道广播数量为 0”
-
-### 关闭方式
-
-```go
-tunnel, _ := api.NewTunnel(
-	api.WithPassword("my-secret-key"),
-	api.WithChannelID("ops"),
-	api.WithEnableBroadcastFallback(false),
-)
-```
-
-适用场景：
-
-- 你更关注“减少无效发送”，并且可接受频道同步窗口内的广播丢失
-
-## 4. 解密失败与快速恢复（重点）
+## 3. 解密失败与快速恢复（重点）
 
 ### 典型症状
 
@@ -102,11 +78,11 @@ api.WithFastRehandshakePendingTTL(30*time.Second)
 - `FastRehandshakeSuccess`
 - `FastRehandshakeFailed`
 
-## 5. 常见问题
+## 4. 常见问题
 
 ### Q1：已连接节点没加入频道，为什么看起来还能“转发”？
 
-A：通常是广播兜底触发了“先发给所有连接节点”。但接收端会按频道校验，未订阅频道的数据不会进入 `OnReceive`。
+A：当前版本不会做广播兜底，`Broadcast(channel, ...)` 只会发送给已知订阅该频道的节点。
 
 ### Q2：`Broadcast` 返回发送成功数量，但业务没有收到？
 
@@ -128,7 +104,7 @@ A：先排查应用层是否存在消息风暴/回环；再确认双方 TCP/KCP 
 
 A：表示当前只剩 UDP 且 KCP 不可用。业务数据面不会降级到裸 UDP，需要修复 TCP/KCP 可用性。
 
-## 6. 版本升级说明（v1.2.0）
+## 5. 版本升级说明（v1.2.0）
 
 - 兼容性：无破坏性 API 变更
 - 修复项：
@@ -145,7 +121,7 @@ A：表示当前只剩 UDP 且 KCP 不可用。业务数据面不会降级到裸
 go test ./... -race
 ```
 
-## 7. 参考文档
+## 6. 参考文档
 
 - 项目说明：`README.md`
 - 版本记录：`CHANGELOG.md`

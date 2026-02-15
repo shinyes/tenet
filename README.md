@@ -119,7 +119,6 @@ api.WithFastRehandshakePendingTTL(30*time.Second)
 | `WithPassword(pwd)` | - | 必填，同密码互联 |
 | `WithChannelID(name)` | 空 | 加入业务频道 |
 | `WithListenPort(port)` | `0` | 监听端口，0=随机 |
-| `WithEnableBroadcastFallback(bool)` | `true` | 频道未知时广播兜底 |
 | `WithEnableHolePunch(bool)` | `true` | NAT 打洞开关 |
 | `WithEnableRelay(bool)` | `true` | 中继回退开关 |
 | `WithRelayNodes(addrs)` | 空 | 预置中继节点列表 |
@@ -156,10 +155,6 @@ api.WithFastRehandshakePendingTTL(30*time.Second)
 默认值：`0`。  
 建议：服务端/固定入口使用固定端口；客户端或临时节点可用 `0`。
 
-- `WithEnableBroadcastFallback(bool)`  
-用途：当暂时找不到“已知在频道内”的对端时，是否退化广播到全部连接。  
-默认值：`true`。  
-建议：默认 `true` 便于起步；对流量敏感场景可设 `false`。
 
 ### 网络与安全（进阶）
 

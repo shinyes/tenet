@@ -284,13 +284,6 @@ func WithEnableRelay(enable bool) Option {
 	}
 }
 
-// WithEnableBroadcastFallback 设置是否启用广播兜底
-func WithEnableBroadcastFallback(enable bool) Option {
-	return func(c *tunnelConfig) {
-		c.nodeOpts = append(c.nodeOpts, node.WithEnableBroadcastFallback(enable))
-	}
-}
-
 // WithMaxPeers 设置最大连接数
 func WithMaxPeers(max int) Option {
 	return func(c *tunnelConfig) {

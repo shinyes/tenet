@@ -45,15 +45,14 @@ func (s ConnState) String() string {
 
 // Peer represents a connected node
 type Peer struct {
-	ID              string
-	Addr            net.Addr     // Generalized to net.Addr
-	OriginalAddr    string       // 原始连接地址（用于重连）
-	Conn            net.Conn     // Active TCP connection, if any
-	Transport       string       // "tcp" or "udp"
-	LinkMode        string       // "p2p" or "relay"
-	RelayTarget     *net.UDPAddr // 通过中继访问的目标地址（发起方使用）
-	Session         *crypto.Session
-	PreviousSession *crypto.Session // 上一个会话（用于平滑切换）
+	ID           string
+	Addr         net.Addr     // Generalized to net.Addr
+	OriginalAddr string       // 原始连接地址（用于重连）
+	Conn         net.Conn     // Active TCP connection, if any
+	Transport    string       // "tcp" or "udp"
+	LinkMode     string       // "p2p" or "relay"
+	RelayTarget  *net.UDPAddr // 通过中继访问的目标地址（发起方使用）
+	Session      *crypto.Session
 
 	LastSeen time.Time
 
@@ -179,14 +178,9 @@ func (p *Peer) UpgradeTransport(addr net.Addr, conn net.Conn, transport string, 
 		p.Conn.Close()
 	}
 
-	// 安全关闭旧的 Session，清除密钥材料
-	// 策略变更：不要立即关闭，而是将其移动到 PreviousSession
-	// 以便处理在传输切换期间仍在途中的旧加密包
+	// 关闭旧 Session 并清理密钥材料。
 	if p.Session != nil && p.Session != session {
-		if p.PreviousSession != nil {
-			p.PreviousSession.Close() // 关闭更早的会话
-		}
-		p.PreviousSession = p.Session
+		p.Session.Close()
 	}
 
 	p.Addr = addr
@@ -296,10 +290,6 @@ func (p *Peer) Close() {
 	if p.Session != nil {
 		p.Session.Close()
 		p.Session = nil
-	}
-	if p.PreviousSession != nil {
-		p.PreviousSession.Close()
-		p.PreviousSession = nil
 	}
 
 	if p.Conn != nil && p.Transport == "tcp" {
@@ -447,26 +437,13 @@ func (ps *PeerStore) Count() int {
 func (p *Peer) Decrypt(payload []byte) ([]byte, error) {
 	p.mu.RLock()
 	session := p.Session
-	prevSession := p.PreviousSession
 	p.mu.RUnlock()
 
 	if session == nil {
 		return nil, fmt.Errorf("会话未建立")
 	}
 
-	plaintext, err := session.Decrypt(payload)
-	if err == nil {
-		return plaintext, nil
-	}
-
-	// 尝试回退到旧会话
-	if prevSession != nil {
-		if plaintext, err := prevSession.Decrypt(payload); err == nil {
-			return plaintext, nil
-		}
-	}
-
-	return nil, err
+	return session.Decrypt(payload)
 }
 
 // IncDecryptFailures increases consecutive decrypt failures and returns the latest count.

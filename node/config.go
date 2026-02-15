@@ -71,11 +71,6 @@ type Config struct {
 
 	// 本地订阅的频道名称列表
 	Channels []string
-
-	// 广播兜底开关：
-	// 当频道匹配结果为空时，是否退化为向所有已连接节点发送，
-	// 再由接收端按频道过滤。
-	EnableBroadcastFallback bool
 }
 
 // DefaultConfig 返回默认配置
@@ -105,7 +100,6 @@ func DefaultConfig() *Config {
 		FastRehandshakeMaxAttemptsWindow: 6,
 		FastRehandshakeFailThreshold:     3,
 		FastRehandshakePendingTTL:        30 * time.Second,
-		EnableBroadcastFallback:          true,
 	}
 }
 
@@ -370,12 +364,5 @@ func WithChannelID(channelName string) Option {
 			}
 		}
 		c.Channels = append(c.Channels, channelName)
-	}
-}
-
-// WithEnableBroadcastFallback 设置是否启用广播兜底
-func WithEnableBroadcastFallback(enable bool) Option {
-	return func(c *Config) {
-		c.EnableBroadcastFallback = enable
 	}
 }

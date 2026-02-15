@@ -94,7 +94,7 @@ func TestSendAppFrameRequiresReliableTransport(t *testing.T) {
 	}
 	n.Peers.Add(p)
 
-	err = n.sendAppFrame(p.ID, AppFrameTypeUser, []byte("hi"))
+	err = n.sendAppFrame(p.ID, AppFrameTypeChannelUpdate, []byte("hi"))
 	if err == nil {
 		t.Fatal("expected sendAppFrame to fail without reliable transport")
 	}
