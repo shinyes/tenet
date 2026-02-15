@@ -71,3 +71,24 @@ func TestDiscoveryConnectConcurrencyLimit(t *testing.T) {
 	}
 	n.endDiscoveryConnect()
 }
+
+func TestDiscoveryConnectSeenHardLimit(t *testing.T) {
+	n := newDiscoveryTestNode(t)
+
+	total := discoveryConnectSeenHardLimit + 128
+	for i := 0; i < total; i++ {
+		peerID := fmt.Sprintf("peer-hard-%d", i)
+		addr := fmt.Sprintf("127.0.0.1:%d", 40000+i)
+		if !n.tryBeginDiscoveryConnect(peerID, addr) {
+			t.Fatalf("expected connect %d to be admitted", i)
+		}
+		n.endDiscoveryConnect()
+	}
+
+	n.mu.RLock()
+	seenLen := len(n.discoveryConnectSeen)
+	n.mu.RUnlock()
+	if seenLen > discoveryConnectSeenHardLimit {
+		t.Fatalf("discovery seen map exceeded hard limit: got %d > %d", seenLen, discoveryConnectSeenHardLimit)
+	}
+}

@@ -789,7 +789,7 @@ func (n *Node) handlePacket(conn net.Conn, remoteAddr net.Addr, transport string
 	case PacketTypeDiscoveryReq:
 		n.processDiscoveryRequest(conn, remoteAddr, transport, payload)
 	case PacketTypeDiscoveryResp:
-		n.processDiscoveryResponse(payload)
+		n.processDiscoveryResponse(remoteAddr, payload)
 	case PacketTypeHeartbeat:
 		n.processHeartbeat(conn, remoteAddr, transport)
 	case PacketTypeHeartbeatAck:

@@ -2,6 +2,7 @@ package node
 
 import (
 	"net"
+	"sort"
 	"time"
 
 	"github.com/shinyes/tenet/peer"
@@ -11,6 +12,7 @@ const (
 	discoveryConnectConcurrencyLimit = 8
 	discoveryConnectCooldown         = 10 * time.Second
 	discoveryConnectPruneThreshold   = 256
+	discoveryConnectSeenHardLimit    = 1024
 )
 
 // sendDiscoveryRequest sends a node discovery request packet.
@@ -25,9 +27,12 @@ func (n *Node) sendDiscoveryRequest(p *peer.Peer) {
 
 // processDiscoveryRequest replies with known peers.
 func (n *Node) processDiscoveryRequest(conn net.Conn, remoteAddr net.Addr, transport string, reqPayload []byte) {
-	n.mu.RLock()
+	if !n.isDiscoverySourceAuthenticated(remoteAddr) {
+		n.Config.Logger.Debug("ignore discovery request from unauthenticated source %v", remoteAddr)
+		return
+	}
+
 	peerIDs := n.Peers.IDs()
-	n.mu.RUnlock()
 
 	var entries []byte
 	count := 0
@@ -74,7 +79,12 @@ func (n *Node) processDiscoveryRequest(conn net.Conn, remoteAddr net.Addr, trans
 }
 
 // processDiscoveryResponse parses discovery response and attempts unknown peer connections.
-func (n *Node) processDiscoveryResponse(payload []byte) {
+func (n *Node) processDiscoveryResponse(remoteAddr net.Addr, payload []byte) {
+	if !n.isDiscoverySourceAuthenticated(remoteAddr) {
+		n.Config.Logger.Debug("ignore discovery response from unauthenticated source %v", remoteAddr)
+		return
+	}
+
 	if len(payload) < 2 {
 		return
 	}
@@ -126,21 +136,39 @@ func (n *Node) processDiscoveryResponse(payload []byte) {
 	}
 }
 
+func (n *Node) isDiscoverySourceAuthenticated(remoteAddr net.Addr) bool {
+	if remoteAddr == nil {
+		return false
+	}
+
+	n.mu.RLock()
+	peerID, ok := n.addrToPeer[remoteAddr.String()]
+	n.mu.RUnlock()
+	if !ok {
+		return false
+	}
+
+	_, exists := n.Peers.Get(peerID)
+	return exists
+}
+
 func (n *Node) tryBeginDiscoveryConnect(peerID, addr string) bool {
 	key := peerID + "|" + addr
 	now := time.Now()
 
 	n.mu.Lock()
 	if len(n.discoveryConnectSeen) > discoveryConnectPruneThreshold {
-		for k, until := range n.discoveryConnectSeen {
-			if now.After(until) {
-				delete(n.discoveryConnectSeen, k)
-			}
-		}
+		n.pruneDiscoveryConnectSeenLocked(now)
 	}
 	if until, exists := n.discoveryConnectSeen[key]; exists && now.Before(until) {
 		n.mu.Unlock()
 		return false
+	}
+	if len(n.discoveryConnectSeen) >= discoveryConnectSeenHardLimit {
+		n.pruneDiscoveryConnectSeenLocked(now)
+		if len(n.discoveryConnectSeen) >= discoveryConnectSeenHardLimit {
+			n.trimDiscoveryConnectSeenLocked(discoveryConnectSeenHardLimit - 1)
+		}
 	}
 	n.discoveryConnectSeen[key] = now.Add(discoveryConnectCooldown)
 	sem := n.discoveryConnectSem
@@ -154,6 +182,44 @@ func (n *Node) tryBeginDiscoveryConnect(peerID, addr string) bool {
 		delete(n.discoveryConnectSeen, key)
 		n.mu.Unlock()
 		return false
+	}
+}
+
+func (n *Node) pruneDiscoveryConnectSeenLocked(now time.Time) {
+	for k, until := range n.discoveryConnectSeen {
+		if !now.Before(until) {
+			delete(n.discoveryConnectSeen, k)
+		}
+	}
+}
+
+func (n *Node) trimDiscoveryConnectSeenLocked(targetSize int) {
+	if targetSize < 0 {
+		targetSize = 0
+	}
+	if len(n.discoveryConnectSeen) <= targetSize {
+		return
+	}
+
+	type seenEntry struct {
+		key   string
+		until time.Time
+	}
+
+	entries := make([]seenEntry, 0, len(n.discoveryConnectSeen))
+	for key, until := range n.discoveryConnectSeen {
+		entries = append(entries, seenEntry{key: key, until: until})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].until.Before(entries[j].until)
+	})
+
+	removeCount := len(n.discoveryConnectSeen) - targetSize
+	if removeCount > len(entries) {
+		removeCount = len(entries)
+	}
+	for i := 0; i < removeCount; i++ {
+		delete(n.discoveryConnectSeen, entries[i].key)
 	}
 }
 

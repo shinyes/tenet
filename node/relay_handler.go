@@ -78,11 +78,16 @@ func (n *Node) registerRelayCandidate(peerID string, remoteAddr net.Addr) {
 		return
 	}
 	addrStr := udpAddr.String()
+
+	n.mu.Lock()
 	if n.relayAddrSet[addrStr] {
+		n.mu.Unlock()
 		return
 	}
-	n.relayManager.AddRelay(peerID, udpAddr)
 	n.relayAddrSet[addrStr] = true
+	n.mu.Unlock()
+
+	n.relayManager.AddRelay(peerID, udpAddr)
 }
 
 // buildRelayPacket 构造中继封装包

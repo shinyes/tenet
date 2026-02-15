@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.1] - 2026-02-15
+
+### Fixed
+- Guarded `relayAddrSet` access in `registerRelayCandidate` to avoid concurrent map read/write panics under parallel handshakes.
+- Added discovery source authentication checks so only known authenticated peers can trigger discovery request/response processing.
+- Added a hard cap and deterministic trim path for `discoveryConnectSeen` to prevent unbounded short-term growth under high-cardinality discovery inputs.
+- Expanded node tests to cover relay candidate concurrency, discovery authentication gates, and discovery seen-map hard-limit behavior.
+
 ## [1.2.0] - 2026-02-14
 
 ### Added
