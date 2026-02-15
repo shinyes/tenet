@@ -2,7 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.3.1] - 2026-02-15
+## [2.0.2] - 2026-02-15
+
+### Changed
+- 优化频道订阅热路径：本地订阅校验从线性扫描改为哈希集合 O(1) 查找。
+- 统一频道哈希表示为 `[32]byte`，降低频繁哈希与比较带来的开销。
+- `JoinChannel` / `LeaveChannel` / `Send` / 频道同步路径统一复用固定哈希表示，减少热路径开销。
+
+### Added
+- 新增频道性能基准：`BenchmarkIsChannelSubscribed_Hit` / `BenchmarkIsChannelSubscribed_Miss`。
+- 新增线性实现对照基准：`BenchmarkIsChannelSubscribed_LinearHit` / `BenchmarkIsChannelSubscribed_LinearMiss`。
+
+## [2.0.1] - 2026-02-15
 
 ### Fixed
 - 在 `registerRelayCandidate` 中保护 `relayAddrSet` 的访问，避免在并行握手时发生并发 map 读/写 panic。
