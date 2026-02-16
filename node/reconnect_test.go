@@ -1,6 +1,7 @@
 package node
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -371,5 +372,194 @@ func TestMinFunction(t *testing.T) {
 		if got := min(tt.a, tt.b); got != tt.expected {
 			t.Errorf("min(%d, %d) = %d, 期望 %d", tt.a, tt.b, got, tt.expected)
 		}
+	}
+}
+
+func TestScheduleReconnectDeduplicatesActiveEntry(t *testing.T) {
+	node, err := NewNode(
+		WithNetworkPassword("test"),
+		WithListenPort(0),
+		WithEnableReconnect(false),
+	)
+	if err != nil {
+		t.Fatalf("create node failed: %v", err)
+	}
+
+	cfg := &ReconnectConfig{
+		Enabled:           true,
+		MaxRetries:        3,
+		InitialDelay:      200 * time.Millisecond,
+		MaxDelay:          200 * time.Millisecond,
+		BackoffMultiplier: 1,
+		JitterFactor:      0,
+		ReconnectTimeout:  100 * time.Millisecond,
+	}
+	rm := NewReconnectManager(node, cfg)
+	defer rm.Close()
+
+	peerID := "peer-dedupe"
+	addr := "203.0.113.1:65010"
+	rm.ScheduleReconnect(peerID, addr)
+	rm.ScheduleReconnect(peerID, addr)
+
+	time.Sleep(30 * time.Millisecond)
+	infos := rm.GetAllReconnectInfo()
+	if len(infos) != 1 {
+		t.Fatalf("expected one reconnect entry, got %d", len(infos))
+	}
+	if infos[0].PeerID != peerID {
+		t.Fatalf("expected peerID %s, got %s", peerID, infos[0].PeerID)
+	}
+}
+
+func TestHandleReconnectSuccessRemovesEntryAndCallsCallback(t *testing.T) {
+	node, err := NewNode(
+		WithNetworkPassword("test"),
+		WithListenPort(0),
+		WithEnableReconnect(false),
+	)
+	if err != nil {
+		t.Fatalf("create node failed: %v", err)
+	}
+
+	rm := NewReconnectManager(node, DefaultReconnectConfig())
+	defer rm.Close()
+
+	peerID := "peer-success"
+	entry := &reconnectEntry{
+		peerID:  peerID,
+		attempt: 2,
+		state:   ReconnectStateConnecting,
+	}
+	rm.entries[peerID] = entry
+
+	done := make(chan struct{})
+	var gotPeer string
+	var gotAttempts int
+	rm.SetOnReconnected(func(p string, a int) {
+		gotPeer = p
+		gotAttempts = a
+		close(done)
+	})
+
+	rm.handleReconnectSuccess(entry)
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting onReconnected callback")
+	}
+
+	if gotPeer != peerID || gotAttempts != 2 {
+		t.Fatalf("unexpected callback args peer=%s attempts=%d", gotPeer, gotAttempts)
+	}
+	if info := rm.GetReconnectInfo(peerID); info != nil {
+		t.Fatal("entry should be removed after success")
+	}
+}
+
+func TestHandleReconnectFailedRemovesEntryAndCallsCallback(t *testing.T) {
+	node, err := NewNode(
+		WithNetworkPassword("test"),
+		WithListenPort(0),
+		WithEnableReconnect(false),
+	)
+	if err != nil {
+		t.Fatalf("create node failed: %v", err)
+	}
+
+	rm := NewReconnectManager(node, DefaultReconnectConfig())
+	defer rm.Close()
+
+	peerID := "peer-failed"
+	lastErr := errors.New("boom")
+	entry := &reconnectEntry{
+		peerID:    peerID,
+		attempt:   3, // internal counter, callback should get attempt-1
+		lastError: lastErr,
+		state:     ReconnectStateConnecting,
+	}
+	rm.entries[peerID] = entry
+
+	done := make(chan struct{})
+	var gotPeer string
+	var gotAttempts int
+	var gotErr error
+	rm.SetOnGaveUp(func(p string, a int, err error) {
+		gotPeer = p
+		gotAttempts = a
+		gotErr = err
+		close(done)
+	})
+
+	rm.handleReconnectFailed(entry)
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting onGaveUp callback")
+	}
+
+	if gotPeer != peerID || gotAttempts != 2 || !errors.Is(gotErr, lastErr) {
+		t.Fatalf("unexpected callback values peer=%s attempts=%d err=%v", gotPeer, gotAttempts, gotErr)
+	}
+	if info := rm.GetReconnectInfo(peerID); info != nil {
+		t.Fatal("entry should be removed after failure")
+	}
+}
+
+func TestCalculateBackoffWithJitterStaysWithinBounds(t *testing.T) {
+	node, err := NewNode(
+		WithNetworkPassword("test"),
+		WithListenPort(0),
+		WithEnableReconnect(false),
+	)
+	if err != nil {
+		t.Fatalf("create node failed: %v", err)
+	}
+
+	cfg := &ReconnectConfig{
+		Enabled:           true,
+		MaxRetries:        10,
+		InitialDelay:      20 * time.Millisecond,
+		MaxDelay:          200 * time.Millisecond,
+		BackoffMultiplier: 2.0,
+		JitterFactor:      1.0,
+		ReconnectTimeout:  100 * time.Millisecond,
+	}
+	rm := NewReconnectManager(node, cfg)
+
+	// With max jitter, delay should still be clamped to [InitialDelay, MaxDelay].
+	for i := 0; i < 100; i++ {
+		d := rm.calculateBackoff(5)
+		if d < cfg.InitialDelay {
+			t.Fatalf("delay below initial delay: %v < %v", d, cfg.InitialDelay)
+		}
+		if d > cfg.MaxDelay {
+			t.Fatalf("delay above max delay: %v > %v", d, cfg.MaxDelay)
+		}
+	}
+}
+
+func TestCancelReconnectIsIdempotent(t *testing.T) {
+	node, err := NewNode(
+		WithNetworkPassword("test"),
+		WithListenPort(0),
+		WithEnableReconnect(false),
+	)
+	if err != nil {
+		t.Fatalf("create node failed: %v", err)
+	}
+
+	rm := NewReconnectManager(node, DefaultReconnectConfig())
+	defer rm.Close()
+
+	peerID := "peer-idempotent"
+	rm.CancelReconnect(peerID)
+	rm.CancelReconnect(peerID)
+
+	// No panic and no leftover entry.
+	if info := rm.GetReconnectInfo(peerID); info != nil {
+		t.Fatal("unexpected reconnect info for canceled peer")
 	}
 }
