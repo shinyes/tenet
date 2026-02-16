@@ -8,6 +8,7 @@ import (
 )
 
 // ReconnectConfig 重连配置
+// ReconnectConfig controls retry/backoff behavior for reconnect attempts.
 type ReconnectConfig struct {
 	// 是否启用自动重连
 	Enabled bool
@@ -32,6 +33,7 @@ type ReconnectConfig struct {
 }
 
 // DefaultReconnectConfig 返回默认重连配置
+// DefaultReconnectConfig returns production-safe reconnect defaults.
 func DefaultReconnectConfig() *ReconnectConfig {
 	return &ReconnectConfig{
 		Enabled:           true,
@@ -45,6 +47,7 @@ func DefaultReconnectConfig() *ReconnectConfig {
 }
 
 // ReconnectState 重连状态
+// ReconnectState describes current reconnect state machine status.
 type ReconnectState int
 
 const (
@@ -78,6 +81,7 @@ func (s ReconnectState) String() string {
 }
 
 // ReconnectInfo 重连信息
+// ReconnectInfo is an external snapshot of one reconnect task.
 type ReconnectInfo struct {
 	PeerID       string         // 目标节点 ID
 	Addr         string         // 目标地址
@@ -103,6 +107,7 @@ type reconnectEntry struct {
 }
 
 // ReconnectManager 重连管理器
+// ReconnectManager schedules and runs reconnect tasks per peer.
 type ReconnectManager struct {
 	config *ReconnectConfig
 	node   *Node
@@ -120,6 +125,7 @@ type ReconnectManager struct {
 }
 
 // NewReconnectManager 创建重连管理器
+// NewReconnectManager creates a reconnect manager bound to a node instance.
 func NewReconnectManager(node *Node, config *ReconnectConfig) *ReconnectManager {
 	if config == nil {
 		config = DefaultReconnectConfig()
@@ -154,6 +160,7 @@ func (rm *ReconnectManager) SetOnGaveUp(handler func(peerID string, attempts int
 }
 
 // ScheduleReconnect 调度重连任务
+// ScheduleReconnect starts or reuses reconnect workflow for one peer.
 func (rm *ReconnectManager) ScheduleReconnect(peerID, addr string) {
 	if !rm.config.Enabled || addr == "" {
 		return
@@ -264,6 +271,7 @@ func (rm *ReconnectManager) Close() {
 }
 
 // reconnectLoop 重连循环
+// reconnectLoop executes retry with timeout/backoff until success or give-up.
 func (rm *ReconnectManager) reconnectLoop(ctx context.Context, entry *reconnectEntry) {
 	defer rm.wg.Done()
 
@@ -384,6 +392,7 @@ func (rm *ReconnectManager) isPeerConnected(peerID string) bool {
 }
 
 // calculateBackoff 计算退避延迟
+// calculateBackoff computes exponential backoff with optional jitter and caps.
 func (rm *ReconnectManager) calculateBackoff(attempt int) time.Duration {
 	// 指数退避：delay = initialDelay * (multiplier ^ (attempt - 1))
 	delay := float64(rm.config.InitialDelay) * math.Pow(rm.config.BackoffMultiplier, float64(attempt-1))
@@ -408,6 +417,7 @@ func (rm *ReconnectManager) calculateBackoff(attempt int) time.Duration {
 }
 
 // handleReconnectSuccess 处理重连成功
+// handleReconnectSuccess finalizes entry and emits success callback/metrics.
 func (rm *ReconnectManager) handleReconnectSuccess(entry *reconnectEntry) {
 	rm.mu.Lock()
 	entry.state = ReconnectStateSuccess
@@ -431,6 +441,7 @@ func (rm *ReconnectManager) handleReconnectSuccess(entry *reconnectEntry) {
 }
 
 // handleReconnectFailed 处理重连失败（放弃）
+// handleReconnectFailed finalizes entry and emits give-up callback.
 func (rm *ReconnectManager) handleReconnectFailed(entry *reconnectEntry) {
 	rm.mu.Lock()
 	entry.state = ReconnectStateFailed
