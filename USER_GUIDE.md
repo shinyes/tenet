@@ -150,7 +150,7 @@ go run ./cmd/stress -total 3000 -concurrency 600 -hold 1500ms
 - `dial-failed`：拨号失败数
 - `fast-closed`：连接后快速关闭数（用于观察拒绝/异常）
 
-## 6. 版本升级说明（v2.0.2）
+## 6. 版本升级说明（v1.4.4）
 
 - 兼容性：无破坏性 API 变更
 - 修复项：
