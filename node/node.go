@@ -14,7 +14,6 @@ import (
 	"github.com/shinyes/tenet/transport"
 )
 
-//
 const (
 	//
 	MagicBytes = "TENT"
@@ -43,7 +42,6 @@ const (
 	MaxReassemblySize = 50 * 1024 * 1024 //
 )
 
-//
 type Node struct {
 	Config   *Config
 	Identity *crypto.Identity
@@ -66,6 +64,7 @@ type Node struct {
 	onPeerDisconnected func(peerID string)
 	mu                 sync.RWMutex
 	tcpWriteMuMap      sync.Map // map[net.Conn]*sync.Mutex
+	tcpSessionSem      chan struct{}
 
 	closing chan struct{}
 	wg      sync.WaitGroup
@@ -97,7 +96,6 @@ type Node struct {
 	localChannelSet      map[[32]byte]struct{}
 }
 
-//
 func NewNode(opts ...Option) (*Node, error) {
 	cfg := DefaultConfig()
 	for _, opt := range opts {
@@ -106,7 +104,7 @@ func NewNode(opts ...Option) (*Node, error) {
 
 	//
 	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("闂傚倸鍊搁崐鎼佸磹閻戣姤鍊块柨鏇楀亾妞ゎ厼鐏濊灒闁兼祴鏅濋悡瀣⒑閸撴彃浜濇繛鍙夛耿瀹曟垿顢旈崼鐔哄幈闂佹枼鏅涢崯浼村煡婢跺瞼纾兼い鎰╁灮鏁堥梺鍝勭焿缁插€熺亽闂佸湱顭堝ù鐤亹瑜嶉埞? %w", err)
+		return nil, fmt.Errorf("invalid node config: %w", err)
 	}
 
 	//
@@ -119,7 +117,7 @@ func NewNode(opts ...Option) (*Node, error) {
 		//
 		id, err = crypto.NewIdentity()
 		if err != nil {
-			return nil, fmt.Errorf("闂傚倸鍊搁崐椋庣矆娓氣偓楠炲鏁嶉崟顒佹濠德板€曢崯浼存儗濞嗘挻鐓欓悗鐢殿焾鍟哥紒鎯у綖缁瑩寮婚悢鐓庣闁归偊鍓欓幆鐐烘⒑閸涘﹦鎳勬繛鍙夛耿婵＄敻宕熼姘辩杸闂侀潧顭堥崹瑙勭妤ｅ啯鐓ｉ煫鍥风到娴滄繃绻涢崼鐔哥叆闁宠鍨块幃鈺咁敊閼测晙鐥梻浣侯焾濮橈箓宕戦幇鏉跨闁圭儤顨呯粈鍫㈡喐鎼淬劌绐? %w", err)
+			return nil, fmt.Errorf("create identity failed: %w", err)
 		}
 	}
 
@@ -140,6 +138,7 @@ func NewNode(opts ...Option) (*Node, error) {
 		relayPendingTarget: make(map[string]*net.UDPAddr),
 		relayInbound:       make(map[string]bool),
 		metrics:            metrics.NewCollector(),
+		tcpSessionSem:      make(chan struct{}, maxConcurrentTCPHandlers),
 		discoveryConnectSem: make(
 			chan struct{},
 			discoveryConnectConcurrencyLimit,
@@ -149,12 +148,10 @@ func NewNode(opts ...Option) (*Node, error) {
 	}, nil
 }
 
-//
 func (n *Node) ID() string {
 	return n.Identity.ID.String()
 }
 
-//
 func (n *Node) Start() error {
 	listenAddr := fmt.Sprintf("[::]:%d", n.Config.ListenPort)
 	if err := n.startUDP(listenAddr); err != nil {
@@ -173,12 +170,10 @@ func (n *Node) Start() error {
 	return nil
 }
 
-//
 func (n *Node) Stop() error {
 	return n.GracefulStop(context.Background())
 }
 
-//
 func (n *Node) GracefulStop(ctx context.Context) error {
 	select {
 	case <-n.closing:
@@ -186,7 +181,7 @@ func (n *Node) GracefulStop(ctx context.Context) error {
 	default:
 	}
 
-	n.Config.Logger.Info("濠电姷鏁告慨鐢割敊閺嶎厼绐楁俊銈呭暞瀹曟煡鏌熼柇锕€鏋涚紒韬插€濋弻锕€螣娓氼垱顎嗛梺鑲╁鐎笛囧Φ閸曨喚鐤€闁圭偓娼欏▍锝咁渻閵堝棙绀夊瀛樻倐楠炲牓濡搁妷顔藉瘜闁荤姴娲╁鎾寸珶閺囩喓绡€闁汇垽娼ф禒婊勩亜閿旇寮€规洘鍔曢埞鎴﹀幢濞嗘劖顔曟繝寰锋澘鈧洟骞婃惔锝囦笉妞ゆ洍鍋撻柡灞诲€濋獮渚€骞掗幋婵喰ョ紓鍌欐缁屽爼宕濋幋婵愭綎婵炲樊浜濋崑鍌炲箹濞ｎ剙鐏柛搴㈡崌濮婅櫣绮欓崠鈥充紣濡炪値鍘奸崲鏌ユ偩?..")
+	n.Config.Logger.Info("node is shutting down")
 
 	// ... (peer closing same)
 	peerIDs := n.Peers.IDs()
@@ -241,7 +236,6 @@ func (n *Node) GracefulStop(ctx context.Context) error {
 	return nil
 }
 
-//
 func (n *Node) buildGoodbyePacket() []byte {
 	//
 	packet := make([]byte, 6)
@@ -251,7 +245,6 @@ func (n *Node) buildGoodbyePacket() []byte {
 	return packet
 }
 
-//
 func (n *Node) Connect(addrStr string) error {
 	return n.ConnectContext(context.Background(), addrStr)
 }
@@ -261,7 +254,6 @@ func (n *Node) ConnectContext(ctx context.Context, addrStr string) error {
 	return n.connectContext(ctx, addrStr)
 }
 
-//
 func (n *Node) OnReceive(f func(string, []byte)) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -280,7 +272,6 @@ func (n *Node) OnPeerDisconnected(f func(string)) {
 	n.onPeerDisconnected = f
 }
 
-//
 func (n *Node) handlePacket(conn net.Conn, remoteAddr net.Addr, transport string, packetType byte, payload []byte) {
 	switch packetType {
 
@@ -299,7 +290,6 @@ func (n *Node) handlePacket(conn net.Conn, remoteAddr net.Addr, transport string
 	}
 }
 
-//
 func (n *Node) GetPeerTransport(peerID string) string {
 	p, ok := n.Peers.Get(peerID)
 	if !ok {
@@ -312,7 +302,6 @@ func (n *Node) GetPeerTransport(peerID string) string {
 	return transport
 }
 
-//
 func (n *Node) GetPeerLinkMode(peerID string) string {
 	p, ok := n.Peers.Get(peerID)
 	if !ok {
@@ -325,7 +314,6 @@ func (n *Node) GetPeerLinkMode(peerID string) string {
 	return linkMode
 }
 
-//
 func (n *Node) GetMetrics() metrics.Snapshot {
 	if n.metrics == nil {
 		return metrics.Snapshot{}
@@ -334,14 +322,12 @@ func (n *Node) GetMetrics() metrics.Snapshot {
 	return n.metrics.GetSnapshot()
 }
 
-//
 func (n *Node) GetNATInfo() *nat.NATInfo {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.natInfo
 }
 
-//
 func (n *Node) ProbeNAT() (*nat.ProbeResult, error) {
 	if n.natProber == nil {
 		return nil, fmt.Errorf("nat prober is not initialized")
@@ -386,7 +372,6 @@ func (n *Node) ProbeNAT() (*nat.ProbeResult, error) {
 	return result, nil
 }
 
-//
 func (n *Node) GetPeerStats(peerID string) (peer.PeerStats, bool) {
 	p, ok := n.Peers.Get(peerID)
 	if !ok {
@@ -397,8 +382,6 @@ func (n *Node) GetPeerStats(peerID string) (peer.PeerStats, bool) {
 
 //
 
-//
-//
 func (n *Node) OnReconnecting(handler func(peerID string, attempt int, nextRetryIn time.Duration)) {
 	n.mu.Lock()
 	n.onReconnecting = handler
@@ -408,8 +391,6 @@ func (n *Node) OnReconnecting(handler func(peerID string, attempt int, nextRetry
 	n.mu.Unlock()
 }
 
-//
-//
 func (n *Node) OnReconnected(handler func(peerID string, attempts int)) {
 	n.mu.Lock()
 	n.onReconnected = handler
@@ -419,8 +400,6 @@ func (n *Node) OnReconnected(handler func(peerID string, attempts int)) {
 	n.mu.Unlock()
 }
 
-//
-//
 func (n *Node) OnGaveUp(handler func(peerID string, attempts int, lastErr error)) {
 	n.mu.Lock()
 	n.onGaveUp = handler
@@ -430,7 +409,6 @@ func (n *Node) OnGaveUp(handler func(peerID string, attempts int, lastErr error)
 	n.mu.Unlock()
 }
 
-//
 func (n *Node) GetReconnectInfo(peerID string) *ReconnectInfo {
 	if n.reconnectManager == nil {
 		return nil
@@ -438,7 +416,6 @@ func (n *Node) GetReconnectInfo(peerID string) *ReconnectInfo {
 	return n.reconnectManager.GetReconnectInfo(peerID)
 }
 
-//
 func (n *Node) GetAllReconnectInfo() []*ReconnectInfo {
 	if n.reconnectManager == nil {
 		return nil
@@ -446,14 +423,12 @@ func (n *Node) GetAllReconnectInfo() []*ReconnectInfo {
 	return n.reconnectManager.GetAllReconnectInfo()
 }
 
-//
 func (n *Node) CancelReconnect(peerID string) {
 	if n.reconnectManager != nil {
 		n.reconnectManager.CancelReconnect(peerID)
 	}
 }
 
-//
 func (n *Node) CancelAllReconnects() {
 	if n.reconnectManager != nil {
 		n.reconnectManager.CancelAll()

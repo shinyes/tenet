@@ -8,6 +8,13 @@ import (
 	"github.com/shinyes/tenet/internal/pool"
 )
 
+const (
+	tcpAcceptErrorBackoff    = 50 * time.Millisecond
+	tcpAcceptErrorLogPeriod  = time.Second
+	tcpReadTimeout           = 45 * time.Second
+	maxConcurrentTCPHandlers = 512
+)
+
 // acceptTCP accepts inbound TCP sessions until node closes.
 func (n *Node) acceptTCP() {
 	defer n.wg.Done()
@@ -15,6 +22,7 @@ func (n *Node) acceptTCP() {
 		return
 	}
 
+	var lastAcceptErrLog time.Time
 	for {
 		conn, err := n.tcpListener.Accept()
 		if err != nil {
@@ -22,10 +30,25 @@ func (n *Node) acceptTCP() {
 			case <-n.closing:
 				return
 			default:
-				continue
 			}
+			if time.Since(lastAcceptErrLog) >= tcpAcceptErrorLogPeriod {
+				n.Config.Logger.Warn("accept tcp failed: %v", err)
+				lastAcceptErrLog = time.Now()
+			}
+			time.Sleep(tcpAcceptErrorBackoff)
+			continue
 		}
-		go n.handleTCP(conn)
+
+		select {
+		case n.tcpSessionSem <- struct{}{}:
+			go func(c net.Conn) {
+				defer func() { <-n.tcpSessionSem }()
+				n.handleTCP(c)
+			}(conn)
+		default:
+			n.Config.Logger.Warn("too many tcp sessions, reject: %s", conn.RemoteAddr())
+			_ = conn.Close()
+		}
 	}
 }
 
@@ -44,9 +67,15 @@ func (n *Node) handleTCP(conn net.Conn) {
 	defer pool.PutLargeBuffer(frameBuf)
 
 	for {
+		if err := conn.SetReadDeadline(time.Now().Add(tcpReadTimeout)); err != nil {
+			return
+		}
 		_, err := io.ReadFull(conn, header)
 		if err != nil {
 			if err != io.EOF {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					return
+				}
 				n.Config.Logger.Error("read tcp from %s failed: %v", conn.RemoteAddr(), err)
 			}
 			return
@@ -64,8 +93,14 @@ func (n *Node) handleTCP(conn net.Conn) {
 			buf = make([]byte, length)
 		}
 
+		if err := conn.SetReadDeadline(time.Now().Add(tcpReadTimeout)); err != nil {
+			return
+		}
 		_, err = io.ReadFull(conn, buf)
 		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				return
+			}
 			return
 		}
 

@@ -167,6 +167,30 @@ func (c *Config) Validate() error {
 	if c.FastRehandshakePendingTTL <= 0 {
 		errs = append(errs, errors.New("FastRehandshakePendingTTL must be positive"))
 	}
+	if c.ReconnectConfig != nil {
+		rc := c.ReconnectConfig
+		if rc.MaxRetries < 0 {
+			errs = append(errs, errors.New("ReconnectConfig.MaxRetries must be >= 0"))
+		}
+		if rc.InitialDelay <= 0 {
+			errs = append(errs, errors.New("ReconnectConfig.InitialDelay must be positive"))
+		}
+		if rc.MaxDelay <= 0 {
+			errs = append(errs, errors.New("ReconnectConfig.MaxDelay must be positive"))
+		}
+		if rc.InitialDelay > 0 && rc.MaxDelay > 0 && rc.MaxDelay < rc.InitialDelay {
+			errs = append(errs, errors.New("ReconnectConfig.MaxDelay must be >= ReconnectConfig.InitialDelay"))
+		}
+		if rc.BackoffMultiplier < 1 {
+			errs = append(errs, errors.New("ReconnectConfig.BackoffMultiplier must be >= 1"))
+		}
+		if rc.JitterFactor < 0 || rc.JitterFactor > 1 {
+			errs = append(errs, errors.New("ReconnectConfig.JitterFactor must be in [0,1]"))
+		}
+		if rc.ReconnectTimeout <= 0 {
+			errs = append(errs, errors.New("ReconnectConfig.ReconnectTimeout must be positive"))
+		}
+	}
 
 	// 中继地址格式
 	for _, addr := range c.RelayNodes {

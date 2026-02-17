@@ -101,14 +101,6 @@ func (n *Node) registerPendingHandshakes(remoteUDPAddr *net.UDPAddr, remoteTCPAd
 		n.pendingHandshakes[tcpStateKey] = tcpHandshakeState
 	}
 	n.mu.Unlock()
-
-	go func() {
-		time.Sleep(30 * time.Second)
-		n.mu.Lock()
-		delete(n.pendingHandshakes, udpStateKey)
-		delete(n.pendingHandshakes, tcpStateKey)
-		n.mu.Unlock()
-	}()
 }
 
 // startPunchWorkers launches TCP and UDP punch workers.

@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"math"
+	"math/rand/v2"
 	"sync"
 	"time"
 )
@@ -284,26 +285,34 @@ func (rm *ReconnectManager) reconnectLoop(ctx context.Context, entry *reconnectE
 		default:
 		}
 
+		rm.mu.RLock()
+		peerID := entry.peerID
+		rm.mu.RUnlock()
+
 		// 检查是否已经重新连接
-		if rm.isPeerConnected(entry.peerID) {
+		if rm.isPeerConnected(peerID) {
 			rm.handleReconnectSuccess(entry)
 			return
 		}
 
+		rm.mu.Lock()
 		entry.attempt++
+		attempt := entry.attempt
+		rm.mu.Unlock()
 
 		// 检查是否超过最大重试次数
-		if rm.config.MaxRetries > 0 && entry.attempt > rm.config.MaxRetries {
+		if rm.config.MaxRetries > 0 && attempt > rm.config.MaxRetries {
 			rm.handleReconnectFailed(entry)
 			return
 		}
 
 		// 计算退避延迟
-		delay := rm.calculateBackoff(entry.attempt)
-		entry.nextRetry = time.Now().Add(delay)
+		delay := rm.calculateBackoff(attempt)
+		nextRetry := time.Now().Add(delay)
 
 		rm.mu.Lock()
 		entry.state = ReconnectStateWaiting
+		entry.nextRetry = nextRetry
 		rm.mu.Unlock()
 
 		// 触发重连中回调
@@ -311,11 +320,11 @@ func (rm *ReconnectManager) reconnectLoop(ctx context.Context, entry *reconnectE
 		callback := rm.onReconnecting
 		rm.mu.RUnlock()
 		if callback != nil {
-			go callback(entry.peerID, entry.attempt, delay)
+			go callback(peerID, attempt, delay)
 		}
 
 		rm.node.Config.Logger.Info("节点 %s 将在 %v 后进行第 %d 次重连尝试",
-			entry.peerID[:min(8, len(entry.peerID))], delay, entry.attempt)
+			peerID[:min(8, len(peerID))], delay, attempt)
 
 		// 等待延迟
 		select {
@@ -327,7 +336,7 @@ func (rm *ReconnectManager) reconnectLoop(ctx context.Context, entry *reconnectE
 		}
 
 		// 再次检查是否已连接
-		if rm.isPeerConnected(entry.peerID) {
+		if rm.isPeerConnected(peerID) {
 			rm.handleReconnectSuccess(entry)
 			return
 		}
@@ -335,20 +344,23 @@ func (rm *ReconnectManager) reconnectLoop(ctx context.Context, entry *reconnectE
 		// 执行重连
 		rm.mu.Lock()
 		entry.state = ReconnectStateConnecting
+		addr := entry.addr
 		rm.mu.Unlock()
 
 		rm.node.Config.Logger.Info("正在重连节点 %s (尝试 %d/%d)",
-			entry.peerID[:min(8, len(entry.peerID))], entry.attempt, rm.config.MaxRetries)
+			peerID[:min(8, len(peerID))], attempt, rm.config.MaxRetries)
 
 		// 使用带超时的 context 进行连接
 		attemptCtx, cancel := context.WithTimeout(ctx, rm.config.ReconnectTimeout)
-		err := rm.node.ConnectContext(attemptCtx, entry.addr)
+		err := rm.node.ConnectContext(attemptCtx, addr)
 		cancel()
 
 		if err != nil {
+			rm.mu.Lock()
 			entry.lastError = err
+			rm.mu.Unlock()
 			rm.node.Config.Logger.Warn("重连节点 %s 失败: %v",
-				entry.peerID[:min(8, len(entry.peerID))], err)
+				peerID[:min(8, len(peerID))], err)
 
 			// 更新指标
 			if rm.node.metrics != nil {
@@ -373,7 +385,7 @@ func (rm *ReconnectManager) reconnectLoop(ctx context.Context, entry *reconnectE
 		}
 
 		// 检查是否真的连接成功
-		if rm.isPeerConnected(entry.peerID) {
+		if rm.isPeerConnected(peerID) {
 			rm.handleReconnectSuccess(entry)
 			return
 		}
@@ -394,8 +406,24 @@ func (rm *ReconnectManager) isPeerConnected(peerID string) bool {
 // calculateBackoff 计算退避延迟
 // calculateBackoff computes exponential backoff with optional jitter and caps.
 func (rm *ReconnectManager) calculateBackoff(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+
+	minDelay := rm.config.InitialDelay
+	maxDelay := rm.config.MaxDelay
+	if maxDelay <= 0 {
+		maxDelay = minDelay
+	}
+	if minDelay <= 0 {
+		minDelay = time.Millisecond
+	}
+	if maxDelay < minDelay {
+		maxDelay = minDelay
+	}
+
 	// 指数退避：delay = initialDelay * (multiplier ^ (attempt - 1))
-	delay := float64(rm.config.InitialDelay) * math.Pow(rm.config.BackoffMultiplier, float64(attempt-1))
+	delay := float64(minDelay) * math.Pow(rm.config.BackoffMultiplier, float64(attempt-1))
 
 	// 添加抖动
 	if rm.config.JitterFactor > 0 {
@@ -403,14 +431,12 @@ func (rm *ReconnectManager) calculateBackoff(attempt int) time.Duration {
 		delay += jitter
 	}
 
-	// 限制最大延迟
-	if delay > float64(rm.config.MaxDelay) {
-		delay = float64(rm.config.MaxDelay)
+	// 夹紧到 [minDelay, maxDelay]
+	if delay < float64(minDelay) {
+		delay = float64(minDelay)
 	}
-
-	// 确保延迟不小于 0
-	if delay < 0 {
-		delay = float64(rm.config.InitialDelay)
+	if delay > float64(maxDelay) {
+		delay = float64(maxDelay)
 	}
 
 	return time.Duration(delay)
@@ -462,8 +488,7 @@ func (rm *ReconnectManager) handleReconnectFailed(entry *reconnectEntry) {
 
 // randFloat 生成 [0, 1) 范围的随机浮点数
 func randFloat() float64 {
-	// 使用时间纳秒作为简单随机源
-	return float64(time.Now().UnixNano()%1000) / 1000.0
+	return rand.Float64()
 }
 
 // min 返回两个整数中的较小值
