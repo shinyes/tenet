@@ -127,6 +127,7 @@ api.WithFastRehandshakePendingTTL(30*time.Second)
 | `WithEnableRelayAuth(bool)` | `true` | 中继认证开关 |
 | `WithEnableReconnect(bool)` | `true` | 自动重连开关 |
 | `WithReconnectMaxRetries(n)` | `10` | 最大重试次数（0=无限） |
+| `WithReconnectBackoff(initial,max,multiplier)` | `1s / 5m / 2.0` | 重连退避参数 |
 | `WithMaxConsecutiveDecryptFailures(n)` | `16` | 连续解密失败阈值 |
 | `WithFastRehandshakeBackoff(base,max)` | `500ms / 8s` | fast re-handshake 退避区间 |
 | `WithFastRehandshakeWindow(window,maxAttempts)` | `30s / 6` | fast re-handshake 时间窗限次 |
@@ -199,6 +200,22 @@ api.WithFastRehandshakePendingTTL(30*time.Second)
 用途：限制重连次数，`0` 为无限重试。  
 默认值：`10`。  
 建议：服务端常设 `0` 或较大值；一次性任务可设小值，避免无限等待。
+
+- `WithReconnectBackoff(initialDelay, maxDelay, multiplier)`  
+用途：设置重连指数退避参数。  
+默认值：`1s / 5m / 2.0`。  
+建议：公网弱网可适当增大 `initialDelay` 和 `maxDelay`，避免重试风暴。
+
+重连配置校验规则（`WithReconnectConfig` / `WithReconnectBackoff`）：
+
+- `MaxRetries >= 0`（`0` 表示无限重试）
+- `InitialDelay > 0`
+- `MaxDelay > 0` 且 `MaxDelay >= InitialDelay`
+- `BackoffMultiplier >= 1`
+- `JitterFactor` 必须在 `[0, 1]`
+- `ReconnectTimeout > 0`
+
+若不满足上述条件，`api.NewTunnel(...)` 会返回配置错误。
 
 ### 传输、身份与日志
 
@@ -277,6 +294,7 @@ api.WithFastRehandshakePendingTTL(45*time.Second)
 |---|---|---|
 | `节点未订阅频道` | 发送方本地未加入该频道 | 初始化时加 `WithChannelID(channel)` |
 | `reliable data transport unavailable` | 当前只有 UDP 且 KCP 不可用 | 确保 TCP/KCP 可用 |
+| `too many tcp sessions, reject` | 入站 TCP 并发会话达到上限 | 降低并发接入速度，或拆分入口节点 |
 | 高频 `cipher: message authentication failed` | 消息风暴/乱序导致会话失步 | 先止血应用回环，再调 fast re-handshake 参数 |
 | `Broadcast` 返回成功但业务未收到 | 接收端频道过滤 | 确认接收端订阅了同频道 |
 
@@ -293,6 +311,8 @@ api.WithFastRehandshakePendingTTL(45*time.Second)
 ```bash
 go test ./...
 go test ./... -race
+# TCP 并发短连/慢连压测（本地）
+go run ./cmd/stress -total 3000 -concurrency 600 -hold 1500ms
 ```
 
 ## 项目结构

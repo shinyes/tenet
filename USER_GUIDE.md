@@ -104,7 +104,53 @@ A：先排查应用层是否存在消息风暴/回环；再确认双方 TCP/KCP 
 
 A：表示当前只剩 UDP 且 KCP 不可用。业务数据面不会降级到裸 UDP，需要修复 TCP/KCP 可用性。
 
-## 5. 版本升级说明（v2.0.2）
+### Q7：`配置错误: ... ReconnectConfig ...` 怎么处理？
+
+A：重连参数会在创建阶段校验。请检查以下约束是否满足：
+
+- `MaxRetries >= 0`（`0` 表示无限重试）
+- `InitialDelay > 0`
+- `MaxDelay > 0` 且 `MaxDelay >= InitialDelay`
+- `BackoffMultiplier >= 1`
+- `JitterFactor` 在 `[0, 1]`
+- `ReconnectTimeout > 0`
+
+示例（合法）：
+
+```go
+api.WithReconnectConfig(&node.ReconnectConfig{
+	Enabled:           true,
+	MaxRetries:        10,
+	InitialDelay:      time.Second,
+	MaxDelay:          5 * time.Minute,
+	BackoffMultiplier: 2.0,
+	JitterFactor:      0.2,
+	ReconnectTimeout:  30 * time.Second,
+})
+```
+
+## 5. 压力验证（TCP 并发接入）
+
+仓库内提供了压测命令，可用于验证并发接入和慢连接场景下的稳定性：
+
+```bash
+go run ./cmd/stress -total 3000 -concurrency 600 -hold 1500ms
+```
+
+常用参数：
+
+- `-total`：总连接尝试数
+- `-concurrency`：并发 worker 数
+- `-hold`：每个连接保持时长（可模拟慢连接）
+- `-dial-timeout`：单连接拨号超时
+
+输出指标说明：
+
+- `dial-success`：拨号成功数
+- `dial-failed`：拨号失败数
+- `fast-closed`：连接后快速关闭数（用于观察拒绝/异常）
+
+## 6. 版本升级说明（v2.0.2）
 
 - 兼容性：无破坏性 API 变更
 - 修复项：
@@ -121,7 +167,7 @@ A：表示当前只剩 UDP 且 KCP 不可用。业务数据面不会降级到裸
 go test ./... -race
 ```
 
-## 6. 参考文档
+## 7. 参考文档
 
 - 项目说明：`README.md`
 - 版本记录：`CHANGELOG.md`
