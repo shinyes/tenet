@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.4] - 2026-02-17
+
+### Changed
+- Improved identifier naming clarity in `node/connect_flow.go` by replacing abbreviated names with explicit, semantic names for remote addresses, handshake state/packets, and connect result handling variables.
+- No behavior change; this release is readability and maintainability focused.
+
 ## [2.0.3] - 2026-02-16
 
 ### Changed
