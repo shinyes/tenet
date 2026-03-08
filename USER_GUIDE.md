@@ -150,10 +150,11 @@ go run ./cmd/stress -total 3000 -concurrency 600 -hold 1500ms
 - `dial-failed`：拨号失败数
 - `fast-closed`：连接后快速关闭数（用于观察拒绝/异常）
 
-## 6. 版本升级说明（v1.4.4）
+## 6. 版本升级说明（v1.4.5）
 
 - 兼容性：无破坏性 API 变更
 - 修复项：
+  - 修复 Linux/Unix 构建失败：`transport/socket_unix.go` 改为使用 `golang.org/x/sys/unix` 的 `SetsockoptInt` 与 `SO_REUSEPORT`
   - 并发竞态（会话、地址、链路模式读取）
   - `onReceive == nil` 时频道更新帧误跳过
   - TCP 全局写锁导致跨连接串行化
