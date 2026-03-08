@@ -175,7 +175,7 @@ func (p *Peer) UpgradeTransport(addr net.Addr, conn net.Conn, transport string, 
 	// IMPORTANT: Only close if the previous transport was NOT UDP,
 	// because UDP uses the shared Listener (n.conn) which must stay open.
 	if p.Conn != nil && p.Conn != conn && p.Transport != "udp" {
-		p.Conn.Close()
+		_ = p.Conn.Close()
 	}
 
 	// 关闭旧 Session 并清理密钥材料。
@@ -293,7 +293,7 @@ func (p *Peer) Close() {
 	}
 
 	if p.Conn != nil && p.Transport == "tcp" {
-		p.Conn.Close()
+		_ = p.Conn.Close()
 		p.Conn = nil
 	}
 	p.consecutiveDecryptFails = 0

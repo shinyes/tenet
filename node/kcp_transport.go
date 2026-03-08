@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"sync"
 	"time"
@@ -165,10 +166,14 @@ func (t *KCPTransport) Send(peerID string, data []byte) error {
 		return fmt.Errorf("KCP 会话不存在: %s", peerID)
 	}
 	session := sessionI.(*KCPSession)
+	dataLen := len(data)
+	if dataLen > math.MaxUint16 {
+		return fmt.Errorf("KCP 帧过大: %d", dataLen)
+	}
 
 	// 帧格式: [长度(2)] [数据]
-	frame := make([]byte, 2+len(data))
-	binary.BigEndian.PutUint16(frame[:2], uint16(len(data)))
+	frame := make([]byte, 2+dataLen)
+	binary.BigEndian.PutUint16(frame[:2], uint16(dataLen))
 	copy(frame[2:], data)
 
 	_, err := session.Write(frame)
@@ -186,7 +191,7 @@ func (t *KCPTransport) RemoveSession(peerID string) {
 	if sessionI, ok := t.sessions.LoadAndDelete(peerID); ok {
 		session := sessionI.(*KCPSession)
 		raddr := session.RemoteAddr().String()
-		session.Close()
+		_ = session.Close()
 
 		// 注销 Mux 上的处理器
 		t.mux.UnregisterKCPHandler(raddr)
@@ -213,7 +218,7 @@ func (t *KCPTransport) Close() error {
 	t.sessions.Range(func(key, value interface{}) bool {
 		session := value.(*KCPSession)
 		raddr := session.RemoteAddr().String()
-		session.Close()
+		_ = session.Close()
 		t.mux.UnregisterKCPHandler(raddr)
 		t.sessions.Delete(key)
 		return true

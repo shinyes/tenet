@@ -111,7 +111,11 @@ func (i *Identity) Verify(message, signature []byte) bool {
 
 // identityData 用于 JSON 序列化的中间结构
 type identityData struct {
-	PrivateKey string `json:"private_key"` // Ed25519 私钥（hex）
+	Key string `json:"key"` // Ed25519 私钥（hex）
+}
+
+type legacyIdentityData struct {
+	PrivateKey string `json:"private_key"` // 兼容旧格式
 }
 
 // SaveIdentity 将身份保存到文件
@@ -125,7 +129,7 @@ func (i *Identity) SaveIdentity(path string) error {
 	}
 
 	data := identityData{
-		PrivateKey: hex.EncodeToString(i.PrivateKey),
+		Key: hex.EncodeToString(i.PrivateKey),
 	}
 
 	jsonData, err := json.MarshalIndent(data, "", "  ")
@@ -144,7 +148,7 @@ func (i *Identity) SaveIdentity(path string) error {
 // ToJSON 将身份序列化为 JSON 格式
 func (i *Identity) ToJSON() ([]byte, error) {
 	data := identityData{
-		PrivateKey: hex.EncodeToString(i.PrivateKey),
+		Key: hex.EncodeToString(i.PrivateKey),
 	}
 	return json.MarshalIndent(data, "", "  ")
 }
@@ -156,7 +160,16 @@ func IdentityFromJSON(jsonData []byte) (*Identity, error) {
 		return nil, fmt.Errorf("解析身份 JSON 失败: %w", err)
 	}
 
-	privKeyBytes, err := hex.DecodeString(data.PrivateKey)
+	keyHex := data.Key
+	if keyHex == "" {
+		var legacy legacyIdentityData
+		if err := json.Unmarshal(jsonData, &legacy); err != nil {
+			return nil, fmt.Errorf("解析旧版身份 JSON 失败: %w", err)
+		}
+		keyHex = legacy.PrivateKey
+	}
+
+	privKeyBytes, err := hex.DecodeString(keyHex)
 	if err != nil {
 		return nil, fmt.Errorf("解码私钥失败: %w", err)
 	}
@@ -171,7 +184,8 @@ func IdentityFromJSON(jsonData []byte) (*Identity, error) {
 // LoadIdentity 从文件加载身份
 // 从存储的 Ed25519 私钥派生所有其他密钥
 func LoadIdentity(path string) (*Identity, error) {
-	jsonData, err := os.ReadFile(path)
+	cleanPath := filepath.Clean(path)
+	jsonData, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return nil, fmt.Errorf("读取身份文件失败: %w", err)
 	}

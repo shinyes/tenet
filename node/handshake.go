@@ -60,7 +60,9 @@ func (n *Node) processHandshake(conn net.Conn, remoteAddr net.Addr, transport st
 	// 3. 发送响应（不需要锁）
 	if response != nil {
 		packet := protocol.BuildHandshakePacket(response)
-		n.sendRaw(conn, remoteAddr, transport, packet)
+		if err := n.sendRaw(conn, remoteAddr, transport, packet); err != nil {
+			n.Config.Logger.Debug("send handshake response failed: %v", err)
+		}
 	}
 
 	// 4. 会话建立后的处理

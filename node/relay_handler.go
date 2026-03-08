@@ -2,6 +2,7 @@ package node
 
 import (
 	"fmt"
+	"math"
 	"net"
 
 	"github.com/shinyes/tenet/crypto"
@@ -97,7 +98,8 @@ func (n *Node) buildRelayPacket(mode byte, targetAddr *net.UDPAddr, inner []byte
 		return nil, fmt.Errorf("目标地址为空")
 	}
 	addrStr := targetAddr.String()
-	if len(addrStr) > 255 {
+	addrLen := len(addrStr)
+	if addrLen > math.MaxUint8 {
 		return nil, fmt.Errorf("目标地址过长")
 	}
 
@@ -112,21 +114,23 @@ func (n *Node) buildRelayPacket(mode byte, targetAddr *net.UDPAddr, inner []byte
 	}
 
 	// 确保认证数据不超过 255 字节
-	if len(authTokenData) > 255 {
-		authTokenData = authTokenData[:255]
+	authTokenLen := len(authTokenData)
+	if authTokenLen > math.MaxUint8 {
+		authTokenLen = math.MaxUint8
+		authTokenData = authTokenData[:authTokenLen]
 	}
 
-	payloadLen := 2 + len(addrStr) + 1 + len(authTokenData) + len(inner)
+	payloadLen := 2 + addrLen + 1 + authTokenLen + len(inner)
 	payload := make([]byte, payloadLen)
 	payload[0] = mode
-	payload[1] = byte(len(addrStr))
+	payload[1] = byte(addrLen)
 	offset := 2
 	copy(payload[offset:], []byte(addrStr))
-	offset += len(addrStr)
-	payload[offset] = byte(len(authTokenData))
+	offset += addrLen
+	payload[offset] = byte(authTokenLen)
 	offset++
 	copy(payload[offset:], authTokenData)
-	offset += len(authTokenData)
+	offset += authTokenLen
 	copy(payload[offset:], inner)
 
 	packet := make([]byte, 5+len(payload))

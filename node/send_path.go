@@ -28,6 +28,9 @@ func (n *Node) sendRaw(conn net.Conn, addr net.Addr, transport string, packet []
 // writeTCPPacket encodes and writes one framed TCP packet.
 func (n *Node) writeTCPPacket(conn net.Conn, packet []byte) error {
 	frame := protocol.EncodeTCPFrame(packet)
+	if frame == nil {
+		return fmt.Errorf("TCP frame too large: %d", len(packet))
+	}
 	mu := n.getTCPWriteMutex(conn)
 	mu.Lock()
 	defer mu.Unlock()

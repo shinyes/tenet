@@ -3,6 +3,7 @@ package nat
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"net"
 	"sync"
 	"time"
@@ -194,8 +195,14 @@ func (p *NATProber) ProbeViaHelper(helperAddrs []*net.UDPAddr) (*ProbeResult, er
 
 	// 向所有辅助地址发送探测请求
 	packet := p.buildProbeRequest(requestID, len(helperAddrs))
+	sent := 0
 	for _, addr := range helperAddrs {
-		p.conn.WriteTo(packet, addr)
+		if _, err := p.conn.WriteTo(packet, addr); err == nil {
+			sent++
+		}
+	}
+	if sent == 0 {
+		return nil, fmt.Errorf("发送探测请求失败")
 	}
 
 	// 等待响应（超时或收到足够响应）
@@ -368,27 +375,41 @@ func (p *NATProber) buildProbeRequest(requestID uint32, portCount int) []byte {
 	copy(packet[0:4], ProbeMagic)
 	packet[4] = ProbeTypeRequest
 	binary.BigEndian.PutUint32(packet[5:9], requestID)
-	packet[9] = byte(portCount)
+	packet[9] = clampIntToUint8(portCount)
 	return packet
 }
 
 // buildProbeResponse 构建探测响应包
 func (p *NATProber) buildProbeResponse(requestID uint32, observedAddr *net.UDPAddr, fromPort int) []byte {
+	if observedAddr == nil {
+		return nil
+	}
 	// 格式: [Magic(4)] [Type(1)] [RequestID(4)] [ObservedPort(2)] [IPLen(1)] [IP(N)] [FromPort(2)]
 	ip := observedAddr.IP.To4()
 	if ip == nil {
 		ip = observedAddr.IP.To16()
 	}
 	ipLen := len(ip)
+	if ipLen > math.MaxUint8 {
+		return nil
+	}
+	observedPort, ok := intToUint16Checked(observedAddr.Port)
+	if !ok {
+		return nil
+	}
+	fromPortUint16, ok := intToUint16Checked(fromPort)
+	if !ok {
+		return nil
+	}
 
 	packet := make([]byte, 14+ipLen)
 	copy(packet[0:4], ProbeMagic)
 	packet[4] = ProbeTypeResponse
 	binary.BigEndian.PutUint32(packet[5:9], requestID)
-	binary.BigEndian.PutUint16(packet[9:11], uint16(observedAddr.Port))
+	binary.BigEndian.PutUint16(packet[9:11], observedPort)
 	packet[11] = byte(ipLen)
 	copy(packet[12:12+ipLen], ip)
-	binary.BigEndian.PutUint16(packet[12+ipLen:14+ipLen], uint16(fromPort))
+	binary.BigEndian.PutUint16(packet[12+ipLen:14+ipLen], fromPortUint16)
 
 	return packet
 }
@@ -482,24 +503,57 @@ type NATInfo struct {
 
 // Encode 编码 NAT 信息
 func (n *NATInfo) Encode() []byte {
+	if n == nil || n.PublicAddr == nil {
+		return nil
+	}
+
 	// 格式: [Type(1)] [Port(2)] [IPLen(1)] [IP(N)] [Predictable(1)] [Delta(2)]
 	ip := n.PublicAddr.IP.To4()
 	if ip == nil {
 		ip = n.PublicAddr.IP.To16()
 	}
 	ipLen := len(ip)
+	if ipLen > math.MaxUint8 {
+		return nil
+	}
+
+	port, ok := intToUint16Checked(n.PublicAddr.Port)
+	if !ok {
+		return nil
+	}
+	delta, ok := intToUint16Checked(n.PortDelta)
+	if !ok {
+		return nil
+	}
 
 	data := make([]byte, 7+ipLen)
-	data[0] = byte(n.Type)
-	binary.BigEndian.PutUint16(data[1:3], uint16(n.PublicAddr.Port))
+	data[0] = clampIntToUint8(int(n.Type))
+	binary.BigEndian.PutUint16(data[1:3], port)
 	data[3] = byte(ipLen)
 	copy(data[4:4+ipLen], ip)
 	if n.PortPredictable {
 		data[4+ipLen] = 1
 	}
-	binary.BigEndian.PutUint16(data[5+ipLen:7+ipLen], uint16(n.PortDelta))
+	binary.BigEndian.PutUint16(data[5+ipLen:7+ipLen], delta)
 
 	return data
+}
+
+func intToUint16Checked(v int) (uint16, bool) {
+	if v < 0 || v > math.MaxUint16 {
+		return 0, false
+	}
+	return uint16(v), true
+}
+
+func clampIntToUint8(v int) byte {
+	if v < 0 {
+		return 0
+	}
+	if v > math.MaxUint8 {
+		return math.MaxUint8
+	}
+	return byte(v)
 }
 
 // DecodeNATInfo 解码 NAT 信息

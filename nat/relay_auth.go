@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -156,6 +157,9 @@ func (a *RelayAuthenticator) buildMessage(srcID, dstID [16]byte, timestamp int64
 	message := make([]byte, 16+16+8)
 	copy(message[0:16], srcID[:])
 	copy(message[16:32], dstID[:])
+	if timestamp < 0 {
+		timestamp = 0
+	}
 	binary.BigEndian.PutUint64(message[32:40], uint64(timestamp))
 	return message
 }
@@ -164,12 +168,19 @@ func (a *RelayAuthenticator) buildMessage(srcID, dstID [16]byte, timestamp int64
 func (t *RelayAuthToken) Encode() []byte {
 	// 格式: [SrcID(16)] [DstID(16)] [Timestamp(8)] [SigLen(1)] [Signature(N)]
 	sigLen := len(t.Signature)
+	if sigLen > math.MaxUint8 {
+		sigLen = math.MaxUint8
+	}
 	data := make([]byte, 16+16+8+1+sigLen)
 	copy(data[0:16], t.SrcID[:])
 	copy(data[16:32], t.DstID[:])
-	binary.BigEndian.PutUint64(data[32:40], uint64(t.Timestamp))
+	timestamp := t.Timestamp
+	if timestamp < 0 {
+		timestamp = 0
+	}
+	binary.BigEndian.PutUint64(data[32:40], uint64(timestamp))
 	data[40] = byte(sigLen)
-	copy(data[41:], t.Signature)
+	copy(data[41:], t.Signature[:sigLen])
 	return data
 }
 
@@ -182,7 +193,11 @@ func DecodeToken(data []byte) (*RelayAuthToken, error) {
 	token := &RelayAuthToken{}
 	copy(token.SrcID[:], data[0:16])
 	copy(token.DstID[:], data[16:32])
-	token.Timestamp = int64(binary.BigEndian.Uint64(data[32:40]))
+	timestamp := binary.BigEndian.Uint64(data[32:40])
+	if timestamp > math.MaxInt64 {
+		return nil, fmt.Errorf("token timestamp overflow")
+	}
+	token.Timestamp = int64(timestamp)
 
 	sigLen := int(data[40])
 	if len(data) < 41+sigLen {

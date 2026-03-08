@@ -88,6 +88,6 @@ jobs:
           sarif_file: reports/gosec.sarif
           category: gosec
 
-      - name: Enforce gosec gate (high/high only)
+      - name: Enforce gosec gate
         run: |
-          "$(go env GOPATH)/bin/gosec" -severity high -confidence high ./...
+          "$(go env GOPATH)/bin/gosec" ./...

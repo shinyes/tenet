@@ -77,7 +77,9 @@ func (n *Node) handleRead() {
 			originAddr, forward := n.relayForward[addr.String()]
 			n.mu.RUnlock()
 			if forward && originAddr != nil {
-				n.tentConn.WriteTo(buf[:count], originAddr)
+				if _, err := n.tentConn.WriteTo(buf[:count], originAddr); err != nil {
+					n.Config.Logger.Debug("relay forward write failed: %v", err)
+				}
 				continue
 			}
 		}

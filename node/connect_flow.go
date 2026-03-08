@@ -32,8 +32,18 @@ func (n *Node) connectContext(ctx context.Context, remoteAddr string) error {
 		return err
 	}
 
-	resultCh, punchCancel := n.startPunchWorkers(ctx, remoteUDPAddr, remoteTCPAddr, udpHandshakePacket)
+	punchCtx, punchCancel := context.WithCancel(ctx)
 	defer punchCancel()
+
+	go func() {
+		select {
+		case <-n.closing:
+			punchCancel()
+		case <-punchCtx.Done():
+		}
+	}()
+
+	resultCh := n.startPunchWorkers(punchCtx, remoteUDPAddr, remoteTCPAddr, udpHandshakePacket)
 
 	n.registerPendingHandshakes(remoteUDPAddr, remoteTCPAddr, udpHandshakeState, tcpHandshakeState)
 
@@ -104,20 +114,11 @@ func (n *Node) registerPendingHandshakes(remoteUDPAddr *net.UDPAddr, remoteTCPAd
 }
 
 // startPunchWorkers launches TCP and UDP punch workers.
-func (n *Node) startPunchWorkers(ctx context.Context, remoteUDPAddr *net.UDPAddr, remoteTCPAddr *net.TCPAddr, udpHandshakePacket []byte) (chan connectResult, context.CancelFunc) {
+func (n *Node) startPunchWorkers(ctx context.Context, remoteUDPAddr *net.UDPAddr, remoteTCPAddr *net.TCPAddr, udpHandshakePacket []byte) chan connectResult {
 	resultCh := make(chan connectResult, 2)
-	punchCtx, punchCancel := context.WithCancel(ctx)
 
 	go func() {
-		select {
-		case <-n.closing:
-			punchCancel()
-		case <-punchCtx.Done():
-		}
-	}()
-
-	go func() {
-		tcpCtx, cancel := context.WithTimeout(punchCtx, 10*time.Second)
+		tcpCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 
 		puncher := nat.NewTCPHolePuncher()
@@ -133,7 +134,7 @@ func (n *Node) startPunchWorkers(ctx context.Context, remoteUDPAddr *net.UDPAddr
 		timeout := time.After(2 * time.Second)
 		for {
 			select {
-			case <-punchCtx.Done():
+			case <-ctx.Done():
 				return
 			case <-timeout:
 				resultCh <- connectResult{Transport: "udp"}
@@ -145,7 +146,7 @@ func (n *Node) startPunchWorkers(ctx context.Context, remoteUDPAddr *net.UDPAddr
 		}
 	}()
 
-	return resultCh, punchCancel
+	return resultCh
 }
 
 // awaitConnectResult resolves connect outcome from worker events and timeout.
@@ -170,7 +171,7 @@ func (n *Node) awaitConnectResult(ctx context.Context, remoteAddr string, remote
 			case "tcp":
 				if result.Conn != nil {
 					if err := n.writeTCPPacket(result.Conn, tcpHandshakePacket); err != nil {
-						result.Conn.Close()
+						_ = result.Conn.Close()
 						return err
 					}
 					go n.handleTCP(result.Conn)
@@ -185,7 +186,7 @@ func (n *Node) awaitConnectResult(ctx context.Context, remoteAddr string, remote
 				return nil
 			default:
 				if result.Conn != nil {
-					result.Conn.Close()
+					_ = result.Conn.Close()
 				}
 				if result.Err != nil {
 					tcpPunchErr = result.Err
@@ -223,7 +224,9 @@ func (n *Node) scheduleRelayFallback(ctx context.Context, remoteAddr string, rem
 		_, ok := n.addrToPeer[addrKey]
 		n.mu.RUnlock()
 		if !ok {
-			n.connectViaRelay(remoteAddr)
+			if err := n.connectViaRelay(remoteAddr); err != nil {
+				n.Config.Logger.Debug("relay fallback connect failed: %v", err)
+			}
 		}
 	}()
 }
@@ -242,14 +245,14 @@ func (n *Node) awaitLateTCPUpgrade(ctx context.Context, resultCh chan connectRes
 			case result := <-resultCh:
 				if result.Transport == "tcp" && result.Conn != nil {
 					if err := n.writeTCPPacket(result.Conn, tcpHandshakePacket); err != nil {
-						result.Conn.Close()
+						_ = result.Conn.Close()
 						return
 					}
 					go n.handleTCP(result.Conn)
 					return
 				}
 				if result.Conn != nil {
-					result.Conn.Close()
+					_ = result.Conn.Close()
 				}
 			case <-lateTimeout.C:
 				return

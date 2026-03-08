@@ -2,8 +2,9 @@ package node
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/binary"
 	"math"
-	"math/rand/v2"
 	"sync"
 	"time"
 )
@@ -104,7 +105,8 @@ type reconnectEntry struct {
 	nextRetry    time.Time
 	lastError    error
 	disconnectAt time.Time
-	cancelFunc   context.CancelFunc
+	cancelCh     chan struct{}
+	cancelOnce   sync.Once
 }
 
 // ReconnectManager 重连管理器
@@ -178,7 +180,6 @@ func (rm *ReconnectManager) ScheduleReconnect(peerID, addr string) {
 	}
 
 	// 创建新的重连条目
-	ctx, cancel := context.WithCancel(context.Background())
 	entry := &reconnectEntry{
 		peerID:       peerID,
 		addr:         addr,
@@ -186,14 +187,14 @@ func (rm *ReconnectManager) ScheduleReconnect(peerID, addr string) {
 		attempt:      0,
 		maxRetries:   rm.config.MaxRetries,
 		disconnectAt: time.Now(),
-		cancelFunc:   cancel,
+		cancelCh:     make(chan struct{}),
 	}
 	rm.entries[peerID] = entry
 	rm.mu.Unlock()
 
 	// 启动重连协程
 	rm.wg.Add(1)
-	go rm.reconnectLoop(ctx, entry)
+	go rm.reconnectLoop(entry)
 }
 
 // CancelReconnect 取消指定节点的重连
@@ -202,9 +203,7 @@ func (rm *ReconnectManager) CancelReconnect(peerID string) {
 	defer rm.mu.Unlock()
 
 	if entry, exists := rm.entries[peerID]; exists {
-		if entry.cancelFunc != nil {
-			entry.cancelFunc()
-		}
+		entry.cancel()
 		delete(rm.entries, peerID)
 	}
 }
@@ -213,9 +212,7 @@ func (rm *ReconnectManager) CancelReconnect(peerID string) {
 func (rm *ReconnectManager) CancelAll() {
 	rm.mu.Lock()
 	for peerID, entry := range rm.entries {
-		if entry.cancelFunc != nil {
-			entry.cancelFunc()
-		}
+		entry.cancel()
 		delete(rm.entries, peerID)
 	}
 	rm.mu.Unlock()
@@ -273,12 +270,12 @@ func (rm *ReconnectManager) Close() {
 
 // reconnectLoop 重连循环
 // reconnectLoop executes retry with timeout/backoff until success or give-up.
-func (rm *ReconnectManager) reconnectLoop(ctx context.Context, entry *reconnectEntry) {
+func (rm *ReconnectManager) reconnectLoop(entry *reconnectEntry) {
 	defer rm.wg.Done()
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-entry.cancelCh:
 			return
 		case <-rm.closing:
 			return
@@ -328,7 +325,7 @@ func (rm *ReconnectManager) reconnectLoop(ctx context.Context, entry *reconnectE
 
 		// 等待延迟
 		select {
-		case <-ctx.Done():
+		case <-entry.cancelCh:
 			return
 		case <-rm.closing:
 			return
@@ -351,8 +348,19 @@ func (rm *ReconnectManager) reconnectLoop(ctx context.Context, entry *reconnectE
 			peerID[:min(8, len(peerID))], attempt, rm.config.MaxRetries)
 
 		// 使用带超时的 context 进行连接
-		attemptCtx, cancel := context.WithTimeout(ctx, rm.config.ReconnectTimeout)
+		attemptCtx, cancel := context.WithTimeout(context.Background(), rm.config.ReconnectTimeout)
+		attemptDone := make(chan struct{})
+		go func() {
+			select {
+			case <-entry.cancelCh:
+				cancel()
+			case <-rm.closing:
+				cancel()
+			case <-attemptDone:
+			}
+		}()
 		err := rm.node.ConnectContext(attemptCtx, addr)
+		close(attemptDone)
 		cancel()
 
 		if err != nil {
@@ -377,7 +385,7 @@ func (rm *ReconnectManager) reconnectLoop(ctx context.Context, entry *reconnectE
 
 		// 等待一小段时间确认连接成功
 		select {
-		case <-ctx.Done():
+		case <-entry.cancelCh:
 			return
 		case <-rm.closing:
 			return
@@ -488,7 +496,19 @@ func (rm *ReconnectManager) handleReconnectFailed(entry *reconnectEntry) {
 
 // randFloat 生成 [0, 1) 范围的随机浮点数
 func randFloat() float64 {
-	return rand.Float64()
+	var b [8]byte
+	if _, err := cryptorand.Read(b[:]); err != nil {
+		return 0.5
+	}
+	// Use 53 random bits for uniform float64 in [0,1).
+	r := binary.BigEndian.Uint64(b[:]) >> 11
+	return float64(r) / (1 << 53)
+}
+
+func (e *reconnectEntry) cancel() {
+	e.cancelOnce.Do(func() {
+		close(e.cancelCh)
+	})
 }
 
 // min 返回两个整数中的较小值
