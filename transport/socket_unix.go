@@ -6,6 +6,8 @@ package transport
 import (
 	"net"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // ListenConfig returns a net.ListenConfig with SO_REUSEADDR and SO_REUSEPORT enabled.
@@ -16,13 +18,13 @@ func ListenConfig() *net.ListenConfig {
 			var opErr error
 			err := c.Control(func(fd uintptr) {
 				// SO_REUSEADDR allows binding to an address that is already in use
-				if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
+				if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
 					opErr = err
 					return
 				}
 				// SO_REUSEPORT allows multiple sockets to bind to the same port
 				// This is essential for TCP hole punching on Linux/Android
-				if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEPORT, 1); err != nil {
+				if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1); err != nil {
 					opErr = err
 					return
 				}
@@ -43,11 +45,11 @@ func DialConfig(localAddr *net.TCPAddr) *net.Dialer {
 		Control: func(network, address string, c syscall.RawConn) error {
 			var opErr error
 			err := c.Control(func(fd uintptr) {
-				if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
+				if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
 					opErr = err
 					return
 				}
-				if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEPORT, 1); err != nil {
+				if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1); err != nil {
 					opErr = err
 					return
 				}

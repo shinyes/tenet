@@ -2,6 +2,11 @@
 
 本项目的所有重要变更都会记录在此文件中。
 
+## [1.4.5] - 2026-03-08
+
+### Fixed
+- 修复 Linux/Unix 构建失败：`transport/socket_unix.go` 改为使用 `golang.org/x/sys/unix` 的 `SetsockoptInt` 与 `SO_REUSEPORT`，避免 `syscall.SO_REUSEPORT` 在部分 Go 版本下未定义导致编译失败。
+
 ## [1.4.4] - 2026-02-17
 
 ### 变更
