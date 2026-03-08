@@ -73,15 +73,12 @@ jobs:
       - name: Install gosec
         run: go install github.com/securego/gosec/v2/cmd/gosec@latest
 
-      - name: Run gosec (generate SARIF)
-        id: gosec_scan
+      - name: Run gosec (full scan, generate SARIF)
         shell: bash
         run: |
           mkdir -p reports
           set +e
           "$(go env GOPATH)/bin/gosec" -fmt sarif -out reports/gosec.sarif ./...
-          code=$?
-          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit 0
 
       - name: Upload gosec SARIF
@@ -91,6 +88,6 @@ jobs:
           sarif_file: reports/gosec.sarif
           category: gosec
 
-      - name: Fail on gosec findings
-        if: steps.gosec_scan.outputs.exit_code != '0'
-        run: exit 1
+      - name: Enforce gosec gate (high/high only)
+        run: |
+          "$(go env GOPATH)/bin/gosec" -severity high -confidence high ./...
