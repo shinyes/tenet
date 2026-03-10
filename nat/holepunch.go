@@ -1,7 +1,6 @@
 package nat
 
 import (
-	"encoding/binary"
 	"fmt"
 	"net"
 	"sync"
@@ -73,12 +72,8 @@ func (hp *HolePuncher) Punch(peerPublicAddr *net.UDPAddr, peerID []byte) (*HoleP
 
 	// 设置超时
 	deadline := time.Now().Add(hp.config.Timeout)
-	if err := hp.conn.SetDeadline(deadline); err != nil {
-		return nil, fmt.Errorf("设置打洞超时失败: %w", err)
-	}
-	defer func() {
-		_ = hp.conn.SetDeadline(time.Time{})
-	}()
+	hp.conn.SetDeadline(deadline)
+	defer hp.conn.SetDeadline(time.Time{})
 
 	// 构造打洞包
 	// 格式: [PUNCH_MAGIC(4)] [PEER_ID(16)] [TIMESTAMP(8)]
@@ -87,10 +82,9 @@ func (hp *HolePuncher) Punch(peerPublicAddr *net.UDPAddr, peerID []byte) (*HoleP
 	copy(punchPacket[0:4], []byte{0x50, 0x4E, 0x43, 0x48})
 	copy(punchPacket[4:20], peerID[:16])
 	timestamp := time.Now().UnixNano()
-	if timestamp < 0 {
-		timestamp = 0
+	for i := 0; i < 8; i++ {
+		punchPacket[20+i] = byte(timestamp >> (i * 8))
 	}
-	binary.LittleEndian.PutUint64(punchPacket[20:28], uint64(timestamp))
 
 	// 创建接收通道和停止信号
 	receiveChan := make(chan *net.UDPAddr, 1)

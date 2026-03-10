@@ -1,11 +1,6 @@
 // Package protocol 提供协议编解码工具函数
 package protocol
 
-import (
-	"encoding/binary"
-	"math"
-)
-
 // MagicBytes 协议魔术数
 const MagicBytes = "TENT"
 
@@ -64,13 +59,10 @@ func BuildHeartbeatAckPacket(timestamp int64) []byte {
 
 // EncodeTCPFrame 编码 TCP 帧（添加长度前缀）
 func EncodeTCPFrame(packet []byte) []byte {
-	packetLen := len(packet)
-	if packetLen > math.MaxUint16 {
-		return nil
-	}
-	length := uint16(packetLen)
-	frame := make([]byte, 2+packetLen)
-	binary.BigEndian.PutUint16(frame[:2], length)
+	length := uint16(len(packet))
+	frame := make([]byte, 2+len(packet))
+	frame[0] = byte(length >> 8)
+	frame[1] = byte(length)
 	copy(frame[2:], packet)
 	return frame
 }
@@ -88,10 +80,14 @@ func PutTimestamp(buf []byte, timestamp int64) {
 	if len(buf) < 8 {
 		return
 	}
-	if timestamp < 0 {
-		timestamp = 0
-	}
-	binary.LittleEndian.PutUint64(buf[:8], uint64(timestamp))
+	buf[0] = byte(timestamp)
+	buf[1] = byte(timestamp >> 8)
+	buf[2] = byte(timestamp >> 16)
+	buf[3] = byte(timestamp >> 24)
+	buf[4] = byte(timestamp >> 32)
+	buf[5] = byte(timestamp >> 40)
+	buf[6] = byte(timestamp >> 48)
+	buf[7] = byte(timestamp >> 56)
 }
 
 // GetTimestamp 从字节数组读取时间戳（小端序）
@@ -99,11 +95,14 @@ func GetTimestamp(buf []byte) int64 {
 	if len(buf) < 8 {
 		return 0
 	}
-	timestamp := binary.LittleEndian.Uint64(buf[:8])
-	if timestamp > math.MaxInt64 {
-		return math.MaxInt64
-	}
-	return int64(timestamp)
+	return int64(buf[0]) |
+		int64(buf[1])<<8 |
+		int64(buf[2])<<16 |
+		int64(buf[3])<<24 |
+		int64(buf[4])<<32 |
+		int64(buf[5])<<40 |
+		int64(buf[6])<<48 |
+		int64(buf[7])<<56
 }
 
 // ValidateMagic 验证魔术数

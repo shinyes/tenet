@@ -98,11 +98,11 @@ func (m *KCPManager) Listen(port int) error {
 
 	// 应用配置
 	if err := listener.SetReadBuffer(4 * 1024 * 1024); err != nil {
-		_ = listener.Close()
+		listener.Close()
 		return err
 	}
 	if err := listener.SetWriteBuffer(4 * 1024 * 1024); err != nil {
-		_ = listener.Close()
+		listener.Close()
 		return err
 	}
 
@@ -205,7 +205,7 @@ func (m *KCPManager) DialWithLocalAddr(localAddr, remoteAddr string) (*KCPSessio
 	// 在连接上创建 KCP 会话
 	session, err := kcp.NewConn(remoteAddr, nil, 0, 0, &connWrapper{conn})
 	if err != nil {
-		_ = conn.Close()
+		conn.Close()
 		return nil, err
 	}
 
@@ -271,8 +271,8 @@ func (m *KCPManager) configureSession(session *kcp.UDPSession) {
 	session.SetStreamMode(cfg.StreamMode)
 
 	// 设置读写超时
-	_ = session.SetReadDeadline(time.Time{})  // 无超时
-	_ = session.SetWriteDeadline(time.Time{}) // 无超时
+	session.SetReadDeadline(time.Time{})  // 无超时
+	session.SetWriteDeadline(time.Time{}) // 无超时
 }
 
 // GetSession 获取指定地址的 KCP 会话
@@ -288,7 +288,7 @@ func (m *KCPManager) RemoveSession(addr string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if session, ok := m.sessions[addr]; ok {
-		_ = session.Close()
+		session.Close()
 		delete(m.sessions, addr)
 	}
 }
@@ -302,7 +302,7 @@ func (m *KCPManager) Close() error {
 
 	// 关闭所有会话
 	for addr, session := range m.sessions {
-		_ = session.Close()
+		session.Close()
 		delete(m.sessions, addr)
 	}
 

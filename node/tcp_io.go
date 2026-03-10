@@ -58,12 +58,8 @@ func (n *Node) handleTCP(conn net.Conn) {
 	defer conn.Close()
 
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		if err := tcpConn.SetKeepAlive(true); err != nil {
-			n.Config.Logger.Debug("set tcp keepalive failed: %v", err)
-		}
-		if err := tcpConn.SetKeepAlivePeriod(30 * time.Second); err != nil {
-			n.Config.Logger.Debug("set tcp keepalive period failed: %v", err)
-		}
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
 	header := make([]byte, 2)

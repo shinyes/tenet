@@ -179,7 +179,7 @@ func (rm *RelayManager) ProbeAllRelays() {
 	rm.mu.RUnlock()
 
 	for _, relay := range relays {
-		_, _ = rm.ProbeRelay(relay)
+		rm.ProbeRelay(relay)
 	}
 }
 

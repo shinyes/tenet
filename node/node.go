@@ -193,9 +193,7 @@ func (n *Node) GracefulStop(ctx context.Context) error {
 		p.SetState(peer.StateDisconnecting)
 		transport, addr, conn := p.GetTransportInfo()
 		goodbyePacket := n.buildGoodbyePacket()
-		if err := n.sendRaw(conn, addr, transport, goodbyePacket); err != nil {
-			n.Config.Logger.Debug("send goodbye failed: %v", err)
-		}
+		n.sendRaw(conn, addr, transport, goodbyePacket)
 	}
 
 	select {
@@ -206,13 +204,13 @@ func (n *Node) GracefulStop(ctx context.Context) error {
 	close(n.closing)
 
 	if n.mux != nil {
-		_ = n.mux.Close() // This closes n.conn too
+		n.mux.Close() // This closes n.conn too
 	} else if n.conn != nil {
-		_ = n.conn.Close()
+		n.conn.Close()
 	}
 
 	if n.tcpListener != nil {
-		_ = n.tcpListener.Close()
+		n.tcpListener.Close()
 	}
 
 	if n.natProber != nil {
@@ -220,7 +218,7 @@ func (n *Node) GracefulStop(ctx context.Context) error {
 	}
 
 	if n.kcpTransport != nil {
-		_ = n.kcpTransport.Close()
+		n.kcpTransport.Close()
 	}
 
 	if n.reconnectManager != nil {

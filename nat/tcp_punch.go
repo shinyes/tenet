@@ -56,13 +56,13 @@ func (tp *TCPHolePuncher) Punch(ctx context.Context, localPort int, peerAddr *ne
 				// Success!
 				tcpConn, ok := conn.(*net.TCPConn)
 				if !ok {
-					_ = conn.Close()
+					conn.Close()
 					continue
 				}
 				select {
 				case resultChan <- tcpConn:
 				case <-ctx.Done():
-					_ = conn.Close()
+					conn.Close()
 				}
 				return
 			}
@@ -96,9 +96,7 @@ func (tp *TCPHolePuncher) Punch(ctx context.Context, localPort int, peerAddr *ne
 			}
 
 			// Set short deadline to periodically check context
-			if tcpListener, ok := listener.(*net.TCPListener); ok {
-				_ = tcpListener.SetDeadline(time.Now().Add(200 * time.Millisecond))
-			}
+			listener.(*net.TCPListener).SetDeadline(time.Now().Add(200 * time.Millisecond))
 			conn, err := listener.Accept()
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
@@ -116,14 +114,14 @@ func (tp *TCPHolePuncher) Punch(ctx context.Context, localPort int, peerAddr *ne
 			// For simplified hole punching we usually accept and verify handshake later.
 			tcpConn, ok := conn.(*net.TCPConn)
 			if !ok {
-				_ = conn.Close()
+				conn.Close()
 				continue
 			}
 
 			select {
 			case resultChan <- tcpConn:
 			case <-ctx.Done():
-				_ = conn.Close()
+				conn.Close()
 			}
 			return
 		}

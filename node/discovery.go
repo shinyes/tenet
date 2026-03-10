@@ -22,9 +22,7 @@ func (n *Node) sendDiscoveryRequest(p *peer.Peer) {
 	packet[4] = PacketTypeDiscoveryReq
 
 	transport, addr, conn := p.GetTransportInfo()
-	if err := n.sendRaw(conn, addr, transport, packet); err != nil {
-		n.Config.Logger.Debug("send discovery request failed: %v", err)
-	}
+	n.sendRaw(conn, addr, transport, packet)
 }
 
 // processDiscoveryRequest replies with known peers.
@@ -53,17 +51,15 @@ func (n *Node) processDiscoveryRequest(conn net.Conn, remoteAddr net.Addr, trans
 
 		pidBytes := []byte(pid)
 		addrBytes := []byte(addrStr)
-		pidLen := len(pidBytes)
-		addrLen := len(addrBytes)
-		if pidLen > 255 || addrLen > 255 {
+		if len(pidBytes) > 255 || len(addrBytes) > 255 {
 			continue
 		}
 
-		entry := make([]byte, 1+pidLen+1+addrLen)
-		entry[0] = byte(pidLen)
-		copy(entry[1:1+pidLen], pidBytes)
-		entry[1+pidLen] = byte(addrLen)
-		copy(entry[2+pidLen:], addrBytes)
+		entry := make([]byte, 1+len(pidBytes)+1+len(addrBytes))
+		entry[0] = byte(len(pidBytes))
+		copy(entry[1:1+len(pidBytes)], pidBytes)
+		entry[1+len(pidBytes)] = byte(len(addrBytes))
+		copy(entry[2+len(pidBytes):], addrBytes)
 
 		entries = append(entries, entry...)
 		count++
@@ -79,9 +75,7 @@ func (n *Node) processDiscoveryRequest(conn net.Conn, remoteAddr net.Addr, trans
 	packet[4] = PacketTypeDiscoveryResp
 	copy(packet[5:], payload)
 
-	if err := n.sendRaw(conn, remoteAddr, transport, packet); err != nil {
-		n.Config.Logger.Debug("send discovery response failed: %v", err)
-	}
+	n.sendRaw(conn, remoteAddr, transport, packet)
 }
 
 // processDiscoveryResponse parses discovery response and attempts unknown peer connections.

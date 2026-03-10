@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -91,6 +92,26 @@ func (t *Tunnel) Send(channelName string, peerID string, data []byte) error {
 // 返回成功发送的节点数量
 func (t *Tunnel) Broadcast(channelName string, data []byte) (int, error) {
 	return t.node.Broadcast(channelName, data)
+}
+
+// JoinChannel subscribes local node to one channel.
+func (t *Tunnel) JoinChannel(channelName string) error {
+	channelName = strings.TrimSpace(channelName)
+	if channelName == "" {
+		return fmt.Errorf("channel is required")
+	}
+	t.node.JoinChannel(channelName)
+	return nil
+}
+
+// LeaveChannel unsubscribes local node from one channel.
+func (t *Tunnel) LeaveChannel(channelName string) error {
+	channelName = strings.TrimSpace(channelName)
+	if channelName == "" {
+		return fmt.Errorf("channel is required")
+	}
+	t.node.LeaveChannel(channelName)
+	return nil
 }
 
 // OnReceive 设置接收回调

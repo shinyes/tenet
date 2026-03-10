@@ -47,9 +47,7 @@ func (n *Node) sendHeartbeats() {
 		protocol.PutTimestamp(packet[5:], time.Now().UnixNano())
 
 		transport, addr, conn := p.GetTransportInfo()
-		if err := n.sendRaw(conn, addr, transport, packet); err != nil {
-			n.Config.Logger.Debug("send heartbeat failed: %v", err)
-		}
+		n.sendRaw(conn, addr, transport, packet)
 	}
 }
 
@@ -146,9 +144,7 @@ func (n *Node) processHeartbeat(conn net.Conn, remoteAddr net.Addr, transport st
 	packet[4] = PacketTypeHeartbeatAck
 	protocol.PutTimestamp(packet[5:], time.Now().UnixNano())
 
-	if err := n.sendRaw(conn, remoteAddr, transport, packet); err != nil {
-		n.Config.Logger.Debug("send heartbeat ack failed: %v", err)
-	}
+	n.sendRaw(conn, remoteAddr, transport, packet)
 }
 
 // cleanupStaleMappings 清理过期的内部映射，防止内存泄漏

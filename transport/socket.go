@@ -14,16 +14,11 @@ import (
 func ListenConfig() *net.ListenConfig {
 	return &net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
-			var opErr error
-			err := c.Control(func(fd uintptr) {
+			return c.Control(func(fd uintptr) {
 				// Windows: SO_REUSEADDR ensures we can bind multiple sockets to the same port
 				// This is required for TCP Simultaneous Open (Listen + Dial from same port)
-				opErr = windows.SetsockoptInt(windows.Handle(fd), windows.SOL_SOCKET, windows.SO_REUSEADDR, 1)
+				windows.SetsockoptInt(windows.Handle(fd), windows.SOL_SOCKET, windows.SO_REUSEADDR, 1)
 			})
-			if err != nil {
-				return err
-			}
-			return opErr
 		},
 	}
 }
@@ -33,14 +28,9 @@ func DialConfig(localAddr *net.TCPAddr) *net.Dialer {
 	return &net.Dialer{
 		LocalAddr: localAddr,
 		Control: func(network, address string, c syscall.RawConn) error {
-			var opErr error
-			err := c.Control(func(fd uintptr) {
-				opErr = windows.SetsockoptInt(windows.Handle(fd), windows.SOL_SOCKET, windows.SO_REUSEADDR, 1)
+			return c.Control(func(fd uintptr) {
+				windows.SetsockoptInt(windows.Handle(fd), windows.SOL_SOCKET, windows.SO_REUSEADDR, 1)
 			})
-			if err != nil {
-				return err
-			}
-			return opErr
 		},
 	}
 }
